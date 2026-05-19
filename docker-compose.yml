@@ -1,0 +1,55 @@
+services:
+  ollama:
+    image: ollama/ollama:0.5.7
+    container_name: ollama
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "0.0.0.0:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  fastapi-router:
+    profiles: ["proxy"]
+    build:
+      context: ./router
+      dockerfile: Dockerfile
+    image: local/ollama-openai-router:0.1.0
+    container_name: ollama-openai-router
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      ROUTER_HOST: 0.0.0.0
+      ROUTER_PORT: 4000
+      OLLAMA_BASE_URL: http://ollama:11434
+      MODEL_POLICY_FILE: /app/model_policy.yml
+      MODEL_DEFAULT: ${MODEL_DEFAULT:-qwen3.6:35b-a3b}
+      MODEL_CODER: ${MODEL_CODER:-qwen2.5-coder:32b-instruct}
+      KEEP_ALIVE_DEFAULT: ${KEEP_ALIVE_DEFAULT:--1}
+      KEEP_ALIVE_CODER: ${KEEP_ALIVE_CODER:-0}
+    ports:
+      - "0.0.0.0:${ROUTER_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/healthz', timeout=3)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  ollama_data:
+    name: ollama_data
