@@ -48,6 +48,57 @@ curl -sS http://127.0.0.1:11434/api/tags | jq .
 
 ## Chat Completion Tests
 
+## Think Control Policy (Proxy -> Ollama)
+
+LibreChat cannot directly set Ollama's `think` flag for each turn in this setup, so the proxy injects `think` in the Ollama `/api/chat` payload.
+
+Policy defaults:
+
+- `think=true` unless policy triggers `think=false`.
+- `think=false` for web/browse/search-style tool flows (for example `web_search`, `browser`, `http_get`, `fetch`, `scrape`).
+- `think=true` for non-web tools such as `file_search` and `openweather` unless summarization/size heuristics trigger `think=false`.
+- `think=false` when message content is very large (`DISABLE_THINK_CHAR_THRESHOLD`) and for summary-like last-user turns over recent tool-heavy or long context.
+
+Manual override header:
+
+- `X-Ollama-Think: true`
+- `X-Ollama-Think: false`
+
+If the override header is present, it takes precedence over policy.
+
+Example A: automatic `think=false` from web-search style tool call.
+
+```bash
+curl -sS http://127.0.0.1:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3.6:35b-a3b",
+    "messages": [
+      {"role": "user", "content": "Use web search and summarize key takeaways."}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "web_search", "description": "Search the web", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+    ]
+  }' | jq .
+```
+
+Example B: same request but force `think=true` with header override.
+
+```bash
+curl -sS http://127.0.0.1:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'X-Ollama-Think: true' \
+  -d '{
+    "model": "qwen3.6:35b-a3b",
+    "messages": [
+      {"role": "user", "content": "Use web search and summarize key takeaways."}
+    ],
+    "tools": [
+      {"type": "function", "function": {"name": "web_search", "description": "Search the web", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+    ]
+  }' | jq .
+```
+
 ### Default/general model (stays warm)
 
 `keep_alive: -1` is set by router policy for this model by default.

@@ -9,6 +9,8 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from policy import load_think_policy_config, parse_think_override, should_enable_think
+
 app = FastAPI(title="Ollama OpenAI Router", version="0.1.0")
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
@@ -41,6 +43,7 @@ def _load_policy() -> dict[str, Any]:
 
 
 MODEL_KEEP_ALIVE = _load_policy()
+THINK_POLICY_CONFIG = load_think_policy_config()
 
 
 def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -57,7 +60,7 @@ def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     return normalized
 
 
-def _build_ollama_payload(body: dict[str, Any]) -> dict[str, Any]:
+def _build_ollama_payload(body: dict[str, Any], think: bool) -> dict[str, Any]:
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="'model' is required")
@@ -96,6 +99,7 @@ def _build_ollama_payload(body: dict[str, Any]) -> dict[str, Any]:
         "messages": _normalize_messages(messages),
         "stream": bool(body.get("stream", False)),
         "keep_alive": keep_alive,
+        "think": think,
     }
 
     if options:
@@ -144,7 +148,13 @@ async def list_models() -> JSONResponse:
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
-    payload = _build_ollama_payload(body)
+    try:
+        think_override = parse_think_override(request.headers.get("X-Ollama-Think"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    think = should_enable_think(body=body, override=think_override, config=THINK_POLICY_CONFIG)
+    payload = _build_ollama_payload(body, think=think)
     stream = payload.get("stream", False)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
