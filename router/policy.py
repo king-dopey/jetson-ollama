@@ -179,6 +179,7 @@ def should_enable_think(
     body: dict[str, Any],
     override: bool | None,
     config: ThinkPolicyConfig,
+    default_think: bool = True,
 ) -> bool:
     if override is not None:
         return override
@@ -204,4 +205,4 @@ def should_enable_think(
     if summary_requested and (_has_recent_tool_activity(messages) or very_long_turn):
         return False
 
-    return True
+    return default_think

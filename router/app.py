@@ -21,7 +21,13 @@ DEFAULT_KEEP_ALIVE = os.getenv("KEEP_ALIVE_DEFAULT", "-1")
 CODER_KEEP_ALIVE = os.getenv("KEEP_ALIVE_CODER", "0")
 
 
-def _load_policy() -> dict[str, Any]:
+def _parse_scalar(value: Any) -> Any:
+    if isinstance(value, str) and value.lstrip("-").isdigit():
+        return int(value)
+    return value
+
+
+def _load_policy() -> dict[str, dict[str, Any]]:
     if os.path.exists(POLICY_FILE):
         with open(POLICY_FILE, "r", encoding="utf-8") as f:
             parsed = yaml.safe_load(f) or {}
@@ -30,19 +36,29 @@ def _load_policy() -> dict[str, Any]:
                 table = {}
                 for item in models:
                     model_name = item.get("model")
-                    keep_alive = item.get("keep_alive")
+                    keep_alive = _parse_scalar(item.get("keep_alive"))
+                    think = item.get("think")
                     if model_name:
-                        table[model_name] = keep_alive
+                        table[model_name] = {
+                            "keep_alive": keep_alive,
+                            "think": bool(think) if think is not None else True,
+                        }
                 if table:
                     return table
 
     return {
-        DEFAULT_MODEL: int(DEFAULT_KEEP_ALIVE) if str(DEFAULT_KEEP_ALIVE).lstrip("-").isdigit() else DEFAULT_KEEP_ALIVE,
-        CODER_MODEL: int(CODER_KEEP_ALIVE) if str(CODER_KEEP_ALIVE).lstrip("-").isdigit() else CODER_KEEP_ALIVE,
+        DEFAULT_MODEL: {
+            "keep_alive": _parse_scalar(DEFAULT_KEEP_ALIVE),
+            "think": True,
+        },
+        CODER_MODEL: {
+            "keep_alive": _parse_scalar(CODER_KEEP_ALIVE),
+            "think": True,
+        },
     }
 
 
-MODEL_KEEP_ALIVE = _load_policy()
+MODEL_POLICY = _load_policy()
 THINK_POLICY_CONFIG = load_think_policy_config()
 
 
@@ -71,7 +87,7 @@ def _build_ollama_payload(body: dict[str, Any], think: bool) -> dict[str, Any]:
 
     keep_alive = body.get("keep_alive")
     if keep_alive is None:
-        keep_alive = MODEL_KEEP_ALIVE.get(model, os.getenv("OLLAMA_KEEP_ALIVE", "10m"))
+        keep_alive = MODEL_POLICY.get(model, {}).get("keep_alive", os.getenv("OLLAMA_KEEP_ALIVE", "10m"))
 
     options = {}
     passthrough = {
@@ -94,6 +110,12 @@ def _build_ollama_payload(body: dict[str, Any], think: bool) -> dict[str, Any]:
     if body.get("stop") is not None:
         options["stop"] = body["stop"]
 
+    client_options = body.get("options")
+    if client_options is not None:
+        if not isinstance(client_options, dict):
+            raise HTTPException(status_code=400, detail="'options' must be an object")
+        options.update(client_options)
+
     payload = {
         "model": model,
         "messages": _normalize_messages(messages),
@@ -104,6 +126,9 @@ def _build_ollama_payload(body: dict[str, Any], think: bool) -> dict[str, Any]:
 
     if options:
         payload["options"] = options
+
+    if body.get("format") is not None:
+        payload["format"] = body["format"]
 
     return payload
 
@@ -133,7 +158,7 @@ async def healthz() -> JSONResponse:
 async def list_models() -> JSONResponse:
     items = []
     now = int(time.time())
-    for model in MODEL_KEEP_ALIVE.keys():
+    for model in MODEL_POLICY.keys():
         items.append(
             {
                 "id": model,
@@ -153,7 +178,14 @@ async def chat_completions(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    think = should_enable_think(body=body, override=think_override, config=THINK_POLICY_CONFIG)
+    model_name = body.get("model")
+    model_default_think = MODEL_POLICY.get(model_name, {}).get("think", True)
+    think = should_enable_think(
+        body=body,
+        override=think_override,
+        config=THINK_POLICY_CONFIG,
+        default_think=model_default_think,
+    )
     payload = _build_ollama_payload(body, think=think)
     stream = payload.get("stream", False)
 

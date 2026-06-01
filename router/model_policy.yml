@@ -1,5 +1,13 @@
 models:
+  - model: qwen3-coder:30b
+    keep_alive: -1
+    think: false
   - model: qwen3.6:35b-a3b
     keep_alive: -1
+    think: true
+  - model: nemotron-cascade-2:30b
+    keep_alive: 10m
+    think: true
   - model: qwen2.5-coder:32b-instruct
     keep_alive: 0
+    think: true
