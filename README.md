@@ -37,6 +37,28 @@ Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set
 
 The warmup container now pulls models with streaming `POST /api/pull` and only treats the pull as successful when the stream emits `"status":"success"`. It retries pull+registration checks up to `PULL_MAX_RETRIES` times (default `3`) with exponential full-jitter backoff from `PULL_BACKOFF_SEC` (default `10`). A model is warmed only after `/api/tags` confirms it is registered locally.
 
+For each model in `WARMUP_MODELS`, warmup now emits exactly one final status line and includes it in the summary block:
+
+- `already-warm`: model is already resident in `/api/ps` before warmup takes action.
+- `pulled-warmed`: model was missing, pull succeeded, warm call succeeded, and `/api/ps` confirms residency.
+- `already-pulled-warmed`: model was already present in `/api/tags`, warm call succeeded, and `/api/ps` confirms residency.
+- `pull-failed`: streaming pull never reached `{"status":"success"}` after retries.
+- `post-pull-missing`: pull reported success but `/api/tags` still did not list the model.
+- `warm-failed`: `/api/generate` returned non-2xx.
+- `not-resident`: warm call returned 2xx, but post-warm `/api/ps` polling did not confirm residency with a live `expires_at`.
+
+`not-resident` means the warm call itself succeeded but Ollama did not keep the model loaded. The most common causes are:
+
+- `OLLAMA_MAX_LOADED_MODELS` budget is already exhausted by another resident model.
+- A previous request with `keep_alive: 0` evicted the model.
+
+Manual recovery:
+
+```bash
+docker compose run --rm ollama-warmup
+curl -sS http://127.0.0.1:11434/api/ps | jq .
+```
+
 If warmup still fails for one model, run:
 
 ```bash

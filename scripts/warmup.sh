@@ -14,11 +14,109 @@ fetch_tags() {
   curl -fsS "${OLLAMA_URL}/api/tags"
 }
 
+fetch_ps() {
+  curl -fsS "${OLLAMA_URL}/api/ps"
+}
+
 model_in_tags() {
   model_name=$1
   tags_json=$2
   compact=$(printf '%s' "${tags_json}" | tr -d '\n\r\t ')
   printf '%s' "${compact}" | grep -F "\"name\":\"${model_name}\"" >/dev/null 2>&1
+}
+
+model_ps_entry() {
+  model_name=$1
+  ps_json=$2
+  compact=$(printf '%s' "${ps_json}" | tr -d '\n\r\t ')
+  printf '%s' "${compact}" |
+    sed 's/},{/}\n{/g' |
+    grep -F "\"name\":\"${model_name}\"" |
+    head -n 1
+}
+
+model_expires_at() {
+  entry=$1
+  printf '%s\n' "${entry}" | sed -n 's/.*"expires_at":"\([^"]*\)".*/\1/p'
+}
+
+model_size_vram() {
+  entry=$1
+  printf '%s\n' "${entry}" | sed -n 's/.*"size_vram":\([0-9][0-9]*\).*/\1/p'
+}
+
+has_date_dash_d() {
+  if date -d '1970-01-01T00:00:01Z' +%s >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+model_is_resident() {
+  model_name=$1
+  ps_json=$2
+  entry=$(model_ps_entry "${model_name}" "${ps_json}" || printf '')
+  if [ -z "${entry}" ]; then
+    return 1
+  fi
+
+  expires_at=$(model_expires_at "${entry}")
+  if [ -z "${expires_at}" ]; then
+    return 1
+  fi
+
+  if has_date_dash_d; then
+    now_epoch=$(date +%s)
+    expires_epoch=$(date -d "${expires_at}" +%s 2>/dev/null || printf '0')
+    if [ "${expires_epoch}" -gt "${now_epoch}" ]; then
+      return 0
+    fi
+    return 1
+  fi
+
+  size_vram=$(model_size_vram "${entry}")
+  if [ -z "${size_vram}" ]; then
+    return 1
+  fi
+
+  case "${expires_at}" in
+    1970-*)
+      return 1
+      ;;
+  esac
+
+  if [ "${size_vram}" -gt 0 ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+confirm_resident_after_warm() {
+  model_name=$1
+  tries=1
+  while [ "${tries}" -le 5 ]; do
+    ps_json=$(fetch_ps || printf '')
+    if [ -n "${ps_json}" ] && model_is_resident "${model_name}" "${ps_json}"; then
+      return 0
+    fi
+    if [ "${tries}" -lt 5 ]; then
+      sleep 1
+    fi
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+emit_final_status() {
+  status=$1
+  model_name=$2
+  detail=${3:-}
+  if [ -n "${detail}" ]; then
+    log "${status} ${model_name} ${detail}"
+  else
+    log "${status} ${model_name}"
+  fi
 }
 
 random_0_to() {
@@ -105,7 +203,6 @@ pull_and_confirm_with_retries() {
       if [ -n "${tags_after}" ] && model_in_tags "${model_name}" "${tags_after}"; then
         return 0
       fi
-      log "post-pull-missing ${model_name}"
       last_reason=post-pull-missing
     else
       last_reason=pull-failed
@@ -133,12 +230,12 @@ warm_model() {
     -d "{\"model\":\"${model_name}\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
     || printf '000')
 
-  if [ "${http_code}" = "200" ]; then
-    log "success ${model_name}"
-    return 0
-  fi
+  case "${http_code}" in
+    2??)
+      return 0
+      ;;
+  esac
 
-  log "warm-failed ${model_name} http=${http_code}"
   return 1
 }
 
@@ -158,13 +255,26 @@ if [ "${ready_tries}" -ge 60 ]; then
 fi
 
 failed_models=0
-summary=''
+summary_lines=''
 for m in ${WARMUP_MODELS}; do
+  status=''
+  detail=''
+
+  ps_before=$(fetch_ps || printf '')
+  if [ -n "${ps_before}" ] && model_is_resident "${m}" "${ps_before}"; then
+    status='already-warm'
+    emit_final_status "${status}" "${m}"
+    summary_lines="${summary_lines}${status} ${m}\n"
+    continue
+  fi
+
   initial_tags=$(fetch_tags || printf '')
   can_warm=0
+  had_tag_before=0
 
   if [ -n "${initial_tags}" ] && model_in_tags "${m}" "${initial_tags}"; then
     can_warm=1
+    had_tag_before=1
   else
     if pull_and_confirm_with_retries "${m}"; then
       can_warm=1
@@ -181,27 +291,42 @@ for m in ${WARMUP_MODELS}; do
   if [ "${can_warm}" -eq 1 ]; then
     confirmed_tags=$(fetch_tags || printf '')
     if [ -z "${confirmed_tags}" ] || ! model_in_tags "${m}" "${confirmed_tags}"; then
-      log "post-pull-missing ${m}"
       status='post-pull-missing'
     elif warm_model "${m}"; then
-      status='warm'
+      if confirm_resident_after_warm "${m}"; then
+        if [ "${had_tag_before}" -eq 1 ]; then
+          status='already-pulled-warmed'
+        else
+          status='pulled-warmed'
+        fi
+      else
+        status='not-resident'
+      fi
     else
       status='warm-failed'
+      detail="http=${http_code}"
     fi
   fi
 
-  if [ "${status}" != 'warm' ]; then
-    failed_models=$((failed_models + 1))
-  fi
+  emit_final_status "${status}" "${m}" "${detail}"
+  summary_lines="${summary_lines}${status} ${m}\n"
 
-  if [ -n "${summary}" ]; then
-    summary="${summary} ${m}=${status}"
-  else
-    summary="${m}=${status}"
-  fi
+  case "${status}" in
+    already-warm|pulled-warmed|already-pulled-warmed)
+      ;;
+    *)
+      failed_models=$((failed_models + 1))
+      ;;
+  esac
 done
 
-printf '[warmup] summary %s\n' "${summary}"
+log '=== summary ==='
+printf '%b' "${summary_lines}" | while IFS=' ' read -r sname mname; do
+  if [ -n "${sname}" ] && [ -n "${mname}" ]; then
+    printf '[warmup]   %s  %s\n' "${sname}" "${mname}"
+  fi
+done
+log '==============='
 
 if [ "${failed_models}" -eq 0 ]; then
   exit 0
