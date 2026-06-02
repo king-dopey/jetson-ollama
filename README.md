@@ -33,6 +33,19 @@ docker compose --profile verifier up ollama-pull-verifier
 
 Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set` from `docker compose`, it was caused by unescaped shell variables in inline compose commands. The warmup logic now lives in `scripts/warmup.sh`.
 
+### Warmup pull failures
+
+The warmup container now pulls models with streaming `POST /api/pull` and only treats the pull as successful when the stream emits `"status":"success"`. It retries pull+registration checks up to `PULL_MAX_RETRIES` times (default `3`) with exponential full-jitter backoff from `PULL_BACKOFF_SEC` (default `10`). A model is warmed only after `/api/tags` confirms it is registered locally.
+
+If warmup still fails for one model, run:
+
+```bash
+docker compose exec ollama ollama pull qwen3-coder:30b
+docker compose run --rm ollama-warmup
+```
+
+Intermittent warmup pull failures are usually network or registry-side timeouts, not invalid tags. Validated tags currently in use are `qwen3-coder:30b`, `qwen3.6:35b-a3b`, and `nemotron-cascade-2:30b`.
+
 ## Models
 
 The Orin 64 GB node is sized to keep two MoE models warm by default while leaving headroom for KV cache, the router, and the OS.
@@ -182,6 +195,8 @@ The `.env.example` file now carries the Jetson-oriented defaults for this two-wa
 | `OLLAMA_NUM_PARALLEL` | `1` | Serializes generation to preserve memory headroom on the 64 GB unified pool. |
 | `OLLAMA_FLASH_ATTENTION` | `1` | Enables flash attention for lower memory pressure and better Jetson throughput. |
 | `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Uses a higher-quality KV cache format for long-context requests. |
+| `PULL_MAX_RETRIES` | `3` | Warmup pull+registration retry limit per model in `scripts/warmup.sh`. |
+| `PULL_BACKOFF_SEC` | `10` | Warmup base backoff seconds for exponential full-jitter pull retries. |
 
 The Ollama image tag is left unpinned (`ollama/ollama:latest`) per operator preference. Operators who require reproducible deployments may pin a tag here; whichever tag is used must support arm64 flash attention on Jetson for `OLLAMA_FLASH_ATTENTION=1` to take effect.
 

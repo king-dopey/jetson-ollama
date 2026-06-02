@@ -34,6 +34,8 @@ services:
     environment:
       OLLAMA_URL: http://ollama:11434
       WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b qwen3.6:35b-a3b}
+      PULL_MAX_RETRIES: ${PULL_MAX_RETRIES:-3}
+      PULL_BACKOFF_SEC: ${PULL_BACKOFF_SEC:-10}
     volumes:
       - ./scripts:/scripts:ro
     command: ["/bin/sh", "/scripts/warmup.sh"]
