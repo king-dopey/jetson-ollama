@@ -34,36 +34,9 @@ services:
     environment:
       OLLAMA_URL: http://ollama:11434
       WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b qwen3.6:35b-a3b}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        echo "[warmup] waiting for ${OLLAMA_URL}/api/tags"
-        i=0
-        until curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null; do
-          i=$((i+1))
-          if [ "$i" -ge 120 ]; then
-            echo "[warmup] ERROR: Ollama not ready after 120s"
-            exit 1
-          fi
-          sleep 1
-        done
-
-        rc=0
-        for model in ${WARMUP_MODELS}; do
-          echo "[warmup] loading ${model}"
-          if curl -fsS "${OLLAMA_URL}/api/generate" \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"${model}\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
-            >/dev/null; then
-            echo "[warmup] success ${model}"
-          else
-            echo "[warmup] ERROR failed ${model}"
-            rc=1
-          fi
-        done
-
-        exit "$rc"
+    volumes:
+      - ./scripts:/scripts:ro
+    command: ["/bin/sh", "/scripts/warmup.sh"]
 
   ollama-pull-verifier:
     profiles: ["verifier"]

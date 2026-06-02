@@ -29,7 +29,9 @@ docker compose --profile proxy up -d --build
 docker compose --profile verifier up ollama-pull-verifier
 ```
 
-`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. Override the model list with `WARMUP_MODELS` in `.env`. You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
+`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. The warmup logic now lives in `scripts/warmup.sh`; you can customize the script directly if needed. Override the model list with `WARMUP_MODELS` in `.env`. You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
+
+Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set` from `docker compose`, it was caused by unescaped shell variables in inline compose commands. The warmup logic now lives in `scripts/warmup.sh`.
 
 ## Models
 
