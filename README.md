@@ -29,6 +29,8 @@ docker compose --profile proxy up -d --build
 docker compose --profile verifier up ollama-pull-verifier
 ```
 
+`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. Override the model list with `WARMUP_MODELS` in `.env`. You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
+
 ## Models
 
 The Orin 64 GB node is sized to keep two MoE models warm by default while leaving headroom for KV cache, the router, and the OS.
@@ -179,7 +181,7 @@ The `.env.example` file now carries the Jetson-oriented defaults for this two-wa
 | `OLLAMA_FLASH_ATTENTION` | `1` | Enables flash attention for lower memory pressure and better Jetson throughput. |
 | `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Uses a higher-quality KV cache format for long-context requests. |
 
-Compose pins Ollama to `ollama/ollama:0.30.0`. `OLLAMA_FLASH_ATTENTION=1` depends on using an image build that actually includes working flash-attention support on arm64, so keep the image explicit and confirm an enabled flash-attention line in startup logs after upgrades.
+The Ollama image tag is left unpinned (`ollama/ollama:latest`) per operator preference. Operators who require reproducible deployments may pin a tag here; whichever tag is used must support arm64 flash attention on Jetson for `OLLAMA_FLASH_ATTENTION=1` to take effect.
 
 After the stack starts, confirm model state and flash-attention startup behavior:
 
@@ -396,6 +398,9 @@ sudo tegrastats --interval 1000
 
 What to look for:
 
-- Two entries in `/api/ps` for `qwen3-coder:30b` and `qwen3.6:35b-a3b` during steady-state traffic.
+- Before warmup completes, `/api/ps` may return `{"models":[]}`.
+- After `ollama-warmup` exits with code 0, `/api/ps` must list both `qwen3-coder:30b` and `qwen3.6:35b-a3b` with `expires_at` far in the future (`keep_alive=-1`).
 - RAM usage stabilizing around ~50-56 GB for the documented two-warm plan.
 - SWAP staying at `0`, which confirms zram or other swap is not absorbing model pages.
+
+If `/api/ps` is still empty after warmup, check `docker compose logs ollama-warmup` for pull or load errors.

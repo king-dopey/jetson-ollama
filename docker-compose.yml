@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: ollama/ollama:0.30.0
+    image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia
@@ -18,15 +18,56 @@ services:
     volumes:
       - /storage/ollama:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 40s
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  ollama-warmup:
+    image: curlimages/curl:latest
+    container_name: ollama-warmup
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b qwen3.6:35b-a3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "[warmup] waiting for ${OLLAMA_URL}/api/tags"
+        i=0
+        until curl -fsS "${OLLAMA_URL}/api/tags" >/dev/null; do
+          i=$((i+1))
+          if [ "$i" -ge 120 ]; then
+            echo "[warmup] ERROR: Ollama not ready after 120s"
+            exit 1
+          fi
+          sleep 1
+        done
+
+        rc=0
+        for model in ${WARMUP_MODELS}; do
+          echo "[warmup] loading ${model}"
+          if curl -fsS "${OLLAMA_URL}/api/generate" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"${model}\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
+            >/dev/null; then
+            echo "[warmup] success ${model}"
+          else
+            echo "[warmup] ERROR failed ${model}"
+            rc=1
+          fi
+        done
+
+        exit "$rc"
 
   ollama-pull-verifier:
     profiles: ["verifier"]
-    image: ollama/ollama:0.30.0
+    image: ollama/ollama:latest
     container_name: ollama-pull-verifier
     restart: "no"
     depends_on:
