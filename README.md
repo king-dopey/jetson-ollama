@@ -29,7 +29,7 @@ docker compose --profile proxy up -d --build
 docker compose --profile verifier up ollama-pull-verifier
 ```
 
-`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. The warmup logic now lives in `scripts/warmup.sh`; you can customize the script directly if needed. Override the model list with `WARMUP_MODELS` in `.env`. You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
+`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. The warmup logic now lives in `scripts/warmup.sh`; you can customize the script directly if needed. Override the model list with `WARMUP_MODELS` in `.env` using the `model@num_ctx` form, for example `WARMUP_MODELS="qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768"`. Entries without `@num_ctx` fall back to `WARMUP_DEFAULT_NUM_CTX` (default `16384`). You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
 
 Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set` from `docker compose`, it was caused by unescaped shell variables in inline compose commands. The warmup logic now lives in `scripts/warmup.sh`.
 
@@ -37,20 +37,26 @@ Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set
 
 The warmup container now pulls models with streaming `POST /api/pull` and only treats the pull as successful when the stream emits `"status":"success"`. It retries pull+registration checks up to `PULL_MAX_RETRIES` times (default `3`) with exponential full-jitter backoff from `PULL_BACKOFF_SEC` (default `10`). A model is warmed only after `/api/tags` confirms it is registered locally.
 
-For each model in `WARMUP_MODELS`, warmup now emits exactly one final status line and includes it in the summary block:
+For each model in `WARMUP_MODELS`, warmup emits a reload notice when it finds a resident model at the wrong context length, then emits one final status line and includes that final status in the summary block:
 
-- `already-warm`: model is already resident in `/api/ps` before warmup takes action.
-- `pulled-warmed`: model was missing, pull succeeded, warm call succeeded, and `/api/ps` confirms residency.
-- `already-pulled-warmed`: model was already present in `/api/tags`, warm call succeeded, and `/api/ps` confirms residency.
-- `pull-failed`: streaming pull never reached `{"status":"success"}` after retries.
-- `post-pull-missing`: pull reported success but `/api/tags` still did not list the model.
-- `warm-failed`: `/api/generate` returned non-2xx.
-- `not-resident`: warm call returned 2xx, but post-warm `/api/ps` polling did not confirm residency with a live `expires_at`.
+| Status | Meaning |
+| --- | --- |
+| `reloading` | Informational line emitted before warmup unloads a resident model whose `/api/ps` `context_length` does not match the requested `num_ctx`. |
+| `already-warm` | Model is already resident in `/api/ps` at the requested `context_length`, so warmup skips it. |
+| `pulled-warmed` | Model was missing, pull succeeded, warm call succeeded, and `/api/ps` confirms residency at the requested `context_length`. |
+| `already-pulled-warmed` | Model was already present in `/api/tags`, warm call succeeded, and `/api/ps` confirms residency at the requested `context_length`. |
+| `pull-failed` | Streaming pull never reached `{"status":"success"}` after retries. |
+| `post-pull-missing` | Pull reported success but `/api/tags` still did not list the model. |
+| `warm-failed` | `/api/generate` returned non-2xx. |
+| `not-resident` | Warm call returned 2xx, but post-warm `/api/ps` polling did not confirm residency with a live `expires_at`. |
+| `wrong-ctx` | Model became resident, but `/api/ps` still reported a different `context_length` after the post-warm poll. |
 
 `not-resident` means the warm call itself succeeded but Ollama did not keep the model loaded. The most common causes are:
 
 - `OLLAMA_MAX_LOADED_MODELS` budget is already exhausted by another resident model.
 - A previous request with `keep_alive: 0` evicted the model.
+
+`wrong-ctx` means the model is resident but not at the requested `num_ctx`. Warmup now auto-reloads any resident model it finds at the wrong context before warming it again. Operators can confirm the fix by checking `/api/ps` and verifying `context_length` is `16384` for `qwen3-coder:30b` and `32768` for `qwen3.6:35b-a3b`, not `262144`.
 
 Manual recovery:
 
@@ -82,6 +88,8 @@ The Orin 64 GB node is sized to keep two MoE models warm by default while leavin
 ### Budget Math
 
 The two-warm plan is only valid at Q4_K_M with `q8_0` KV cache and `OLLAMA_NUM_PARALLEL=1`:
+
+WARNING: If a model is loaded without an explicit `num_ctx`, Ollama will use its native context length (256K+ for these models), which inflates the resident footprint to about 33 GB per model and breaks the two-warm budget. Always set `num_ctx` per call or rely on the warmup container.
 
 | Component | Expected residency |
 | --- | --- |
@@ -206,6 +214,14 @@ If you want Compose to trigger the optional verifier pull after Ollama becomes h
 docker compose --profile verifier up ollama-pull-verifier
 ```
 
+The warmup container is designed for the documented two-model budget and should normally use:
+
+```bash
+WARMUP_MODELS="qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768"
+```
+
+Use `WARMUP_DEFAULT_NUM_CTX=16384` when you want a shared fallback for entries that omit `@num_ctx`.
+
 ## Ollama Runtime Defaults
 
 The `.env.example` file now carries the Jetson-oriented defaults for this two-warm-model plan:
@@ -213,10 +229,12 @@ The `.env.example` file now carries the Jetson-oriented defaults for this two-wa
 | Env var | Default | What it does |
 | --- | --- | --- |
 | `OLLAMA_KEEP_ALIVE` | `10m` | Global fallback residency when the request and per-model policy do not set `keep_alive`. |
+| `OLLAMA_CONTEXT_LENGTH` | `16384` | Default context length applied to any model load that does not specify `num_ctx` (for example LibreChat or ad-hoc `curl`). Warm pipeline models override this per call. |
 | `OLLAMA_MAX_LOADED_MODELS` | `2` | Allows `qwen3-coder:30b` and `qwen3.6:35b-a3b` to stay loaded together. |
 | `OLLAMA_NUM_PARALLEL` | `1` | Serializes generation to preserve memory headroom on the 64 GB unified pool. |
 | `OLLAMA_FLASH_ATTENTION` | `1` | Enables flash attention for lower memory pressure and better Jetson throughput. |
 | `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Uses a higher-quality KV cache format for long-context requests. |
+| `WARMUP_DEFAULT_NUM_CTX` | `16384` | Fallback `num_ctx` used by `scripts/warmup.sh` when a `WARMUP_MODELS` entry omits `@num_ctx`. |
 | `PULL_MAX_RETRIES` | `3` | Warmup pull+registration retry limit per model in `scripts/warmup.sh`. |
 | `PULL_BACKOFF_SEC` | `10` | Warmup base backoff seconds for exponential full-jitter pull retries. |
 
@@ -225,9 +243,11 @@ The Ollama image tag is left unpinned (`ollama/ollama:latest`) per operator pref
 After the stack starts, confirm model state and flash-attention startup behavior:
 
 ```bash
-curl -sS http://127.0.0.1:11434/api/ps | jq .
+curl -sS http://127.0.0.1:11434/api/ps | jq '.models[] | {name, size_vram, context_length}'
 docker compose logs ollama | grep -i 'flash attention'
 ```
+
+Expect both warm models to be present, `context_length` to be `16384` for `qwen3-coder:30b` and `32768` for `qwen3.6:35b-a3b`, and combined `size_vram` to stay well under about 48 GB.
 
 ## Test Models API
 

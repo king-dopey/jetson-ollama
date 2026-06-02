@@ -2,7 +2,9 @@
 set -eu
 
 OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-WARMUP_MODELS=${WARMUP_MODELS:-qwen3-coder:30b qwen3.6:35b-a3b}
+WARMUP_MODELS=${WARMUP_MODELS:-qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768}
+WARMUP_DEFAULT_NUM_CTX=${WARMUP_DEFAULT_NUM_CTX:-16384}
+KV_CACHE_TYPE=${KV_CACHE_TYPE:-q8_0}
 PULL_MAX_RETRIES=${PULL_MAX_RETRIES:-3}
 PULL_BACKOFF_SEC=${PULL_BACKOFF_SEC:-10}
 
@@ -43,6 +45,11 @@ model_expires_at() {
 model_size_vram() {
   entry=$1
   printf '%s\n' "${entry}" | sed -n 's/.*"size_vram":\([0-9][0-9]*\).*/\1/p'
+}
+
+model_context_length() {
+  entry=$1
+  printf '%s\n' "${entry}" | sed -n 's/.*"context_length":\([0-9][0-9]*\).*/\1/p'
 }
 
 has_date_dash_d() {
@@ -94,17 +101,30 @@ model_is_resident() {
 
 confirm_resident_after_warm() {
   model_name=$1
+  requested_ctx=$2
   tries=1
+  saw_wrong_ctx=0
+
   while [ "${tries}" -le 5 ]; do
     ps_json=$(fetch_ps || printf '')
     if [ -n "${ps_json}" ] && model_is_resident "${model_name}" "${ps_json}"; then
-      return 0
+      entry=$(model_ps_entry "${model_name}" "${ps_json}" || printf '')
+      resident_ctx=$(model_context_length "${entry}")
+      if [ -n "${resident_ctx}" ] && [ "${resident_ctx}" = "${requested_ctx}" ]; then
+        return 0
+      fi
+      saw_wrong_ctx=1
     fi
     if [ "${tries}" -lt 5 ]; then
       sleep 1
     fi
     tries=$((tries + 1))
   done
+
+  if [ "${saw_wrong_ctx}" -eq 1 ]; then
+    return 2
+  fi
+
   return 1
 }
 
@@ -225,9 +245,10 @@ pull_and_confirm_with_retries() {
 
 warm_model() {
   model_name=$1
+  requested_ctx=$2
   http_code=$(curl -fsS -o /dev/null -w '%{http_code}' "${OLLAMA_URL}/api/generate" \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"${model_name}\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
+    -d "{\"model\":\"${model_name}\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_ctx\":${requested_ctx},\"cache_type_k\":\"${KV_CACHE_TYPE}\",\"cache_type_v\":\"${KV_CACHE_TYPE}\",\"num_keep\":256,\"num_predict\":1}}" \
     || printf '000')
 
   case "${http_code}" in
@@ -237,6 +258,15 @@ warm_model() {
   esac
 
   return 1
+}
+
+unload_model() {
+  model_name=$1
+  curl -fsS -o /dev/null -X POST "${OLLAMA_URL}/api/generate" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"${model_name}\",\"prompt\":\"\",\"stream\":false,\"keep_alive\":0}" \
+    >/dev/null 2>&1 || return 1
+  return 0
 }
 
 log "waiting for ${OLLAMA_URL}/api/tags"
@@ -256,16 +286,33 @@ fi
 
 failed_models=0
 summary_lines=''
-for m in ${WARMUP_MODELS}; do
+for entry in ${WARMUP_MODELS}; do
+  m=${entry%@*}
+  requested_ctx=${entry##*@}
+  if [ "${requested_ctx}" = "${entry}" ] || [ -z "${requested_ctx}" ]; then
+    requested_ctx=${WARMUP_DEFAULT_NUM_CTX}
+  fi
+
   status=''
   detail=''
 
   ps_before=$(fetch_ps || printf '')
   if [ -n "${ps_before}" ] && model_is_resident "${m}" "${ps_before}"; then
-    status='already-warm'
-    emit_final_status "${status}" "${m}"
-    summary_lines="${summary_lines}${status} ${m}\n"
-    continue
+    resident_entry=$(model_ps_entry "${m}" "${ps_before}" || printf '')
+    resident_ctx=$(model_context_length "${resident_entry}")
+    if [ -n "${resident_ctx}" ] && [ "${resident_ctx}" = "${requested_ctx}" ]; then
+      status='already-warm'
+      emit_final_status "${status}" "${m}"
+      summary_lines="${summary_lines}${status} ${m}\n"
+      continue
+    fi
+
+    if [ -n "${resident_ctx}" ]; then
+      log "reloading ${m} ctx=${resident_ctx}->ctx=${requested_ctx}"
+    else
+      log "reloading ${m} ctx=unknown->ctx=${requested_ctx}"
+    fi
+    unload_model "${m}" || true
   fi
 
   initial_tags=$(fetch_tags || printf '')
@@ -292,15 +339,20 @@ for m in ${WARMUP_MODELS}; do
     confirmed_tags=$(fetch_tags || printf '')
     if [ -z "${confirmed_tags}" ] || ! model_in_tags "${m}" "${confirmed_tags}"; then
       status='post-pull-missing'
-    elif warm_model "${m}"; then
-      if confirm_resident_after_warm "${m}"; then
+    elif warm_model "${m}" "${requested_ctx}"; then
+      if confirm_resident_after_warm "${m}" "${requested_ctx}"; then
         if [ "${had_tag_before}" -eq 1 ]; then
           status='already-pulled-warmed'
         else
           status='pulled-warmed'
         fi
       else
-        status='not-resident'
+        warm_confirm_rc=$?
+        if [ "${warm_confirm_rc}" -eq 2 ]; then
+          status='wrong-ctx'
+        else
+          status='not-resident'
+        fi
       fi
     else
       status='warm-failed'
