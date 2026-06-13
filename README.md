@@ -1,13 +1,10 @@
 # Jetson AGX Orin LLM Serving Node (Ollama + Optional OpenAI Router)
 
-This repository runs only the LLM serving node for LAN access by LibreChat (hosted elsewhere).
-
-This node is single-tenant by design: do not run any other GPU workload or heavyweight CPU workload here. Extra containers, dev tools, or interactive sessions that touch the GPU break the two-warm memory budget.
+This repository provides an Ollama LLM serving node for a Jetson AGX Orin. It is designed to be used in front of the OpenAPI-compatible router in the separate `router/` subproject.
 
 ## Files
 
-- `docker-compose.yml`: Ollama service plus optional `fastapi-router` profile.
-- `router/model_policy.yml`: per-model `keep_alive` and default `think` policy.
+- `docker-compose.yml`: Ollama service plus optional `proxy` profile that launches a bundled router instance for convenience.
 - `.env.example`: environment values for ports and model behavior.
 
 ## Network and Security Notes
@@ -16,6 +13,7 @@ This node is single-tenant by design: do not run any other GPU workload or heavy
   - `0.0.0.0:11434` (Ollama API)
   - `0.0.0.0:4000` (OpenAI-compatible router, only when profile `proxy` is enabled)
 - Restrict access at host firewall/router ACLs to trusted LAN clients.
+- For the standalone router deployment, see `router/README.md`.
 
 ## Start Services
 
@@ -29,9 +27,19 @@ docker compose --profile proxy up -d --build
 docker compose --profile verifier up ollama-pull-verifier
 ```
 
-`docker compose up -d` also runs a one-shot `ollama-warmup` container that preloads the two warm models so `/api/ps` shows them resident without a manual warm call. The warmup logic now lives in `scripts/warmup.sh`; you can customize the script directly if needed. Override the model list with `WARMUP_MODELS` in `.env` using the `model@num_ctx` form, for example `WARMUP_MODELS="qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768"`. Entries without `@num_ctx` fall back to `WARMUP_DEFAULT_NUM_CTX` (default `16384`). You can rerun warmup independently with `docker compose run --rm ollama-warmup`.
+## Integration with OpenAPI-Compatible Router
 
-Troubleshooting: If you previously saw `WARN[0000] The "..." variable is not set` from `docker compose`, it was caused by unescaped shell variables in inline compose commands. The warmup logic now lives in `scripts/warmup.sh`.
+This Ollama LLM serving node is designed to work with the OpenAPI-compatible router in the `router` subfolder. The router provides a unified `/v1` endpoint for LLM interactions while managing model residency, context length, and other parameters according to a policy configuration.
+
+The router:
+- Enforces model_policy for `keep_alive`, `think`, and `num_ctx` settings
+- Provides a single unified `/v1` endpoint for clients
+- Forwards requests to Ollama with appropriate per-model settings
+
+For more information about the router, please see the [router/README.md](router/README.md) file.
+
+The `proxy` profile in this repository's docker-compose still launches a bundled router instance for convenience; see `router/README.md` for the standalone router docs.
+
 
 ### Warmup pull failures
 
@@ -83,7 +91,6 @@ The Orin 64 GB node is sized to keep two MoE models warm by default while leavin
 | `qwen3-coder:30b` | Strict-JSON and structured-output workloads for boundary selection and cue-ID extraction. | `-1` | `false` | `16384` | Do not raise above `32768` unless you first evict the other warm model. |
 | `qwen3.6:35b-a3b` | Narrative summarization workloads. | `-1` | `true` | `32768` | Hybrid attention keeps KV usage comparatively small. |
 | `nemotron-cascade-2:30b` | Optional reasoning verifier for ambiguous structured answers. | `10m` | `true` | `16384` | Only resident while actively in use; expect one warm-model eviction when it loads. |
-| `qwen2.5-coder:32b-instruct` | Ad-hoc LibreChat coding use. | `0` | `true` | Operator-managed | Remains cold by default and should not be counted in the two-warm residency plan. |
 
 ### Budget Math
 
@@ -203,7 +210,6 @@ Pull the required models on the Orin after Ollama is up:
 ```bash
 ollama pull qwen3-coder:30b
 ollama pull qwen3.6:35b-a3b
-ollama pull qwen2.5-coder:32b-instruct
 # Optional verifier:
 ollama pull nemotron-cascade-2:30b
 ```
@@ -251,6 +257,8 @@ Expect both warm models to be present, `context_length` to be `16384` for `qwen3
 
 ## Test Models API
 
+When using the router (port 4000), the router intercepts requests and applies the following per-model policies before forwarding to Ollama.
+
 Using optional router endpoint (`/v1`):
 
 ```bash
@@ -265,7 +273,9 @@ curl -sS http://127.0.0.1:11434/api/tags | jq .
 
 ## Chat Completion Tests
 
-## Think Control Policy (Proxy -> Ollama)
+When using the router (port 4000), the router intercepts requests and applies the following per-model policies before forwarding to Ollama.
+
+### Think Control Policy (Proxy -> Ollama)
 
 LibreChat cannot directly set Ollama's `think` flag for each turn in this setup, so the proxy injects `think` in the Ollama `/api/chat` payload.
 
@@ -273,7 +283,7 @@ Policy defaults:
 
 - Per-model defaults come from `router/model_policy.yml`.
 - `qwen3-coder:30b` defaults to `think=false`.
-- `qwen3.6:35b-a3b`, `nemotron-cascade-2:30b`, and `qwen2.5-coder:32b-instruct` default to `think=true`.
+- `qwen3.6:35b-a3b`, `nemotron-cascade-2:30b`, and `qwen3-coder:30b` default to `think=true`.
 - `think=false` for web/browse/search-style tool flows (for example `web_search`, `browser`, `http_get`, `fetch`, `scrape`).
 - `think=true` for non-web tools such as `file_search` and `openweather` unless summarization/size heuristics trigger `think=false`.
 - `think=false` when message content is very large (`DISABLE_THINK_CHAR_THRESHOLD`) and for summary-like last-user turns over recent tool-heavy or long context.
@@ -381,7 +391,7 @@ curl -sS http://127.0.0.1:4000/v1/chat/completions \
 curl -sS http://127.0.0.1:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "qwen2.5-coder:32b-instruct",
+    "model": "qwen3-coder:30b",
     "messages": [{"role": "user", "content": "Write a Python function to reverse a linked list."}]
   }' | jq .
 ```
@@ -392,7 +402,7 @@ curl -sS http://127.0.0.1:4000/v1/chat/completions \
 curl -sS http://127.0.0.1:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "qwen2.5-coder:32b-instruct",
+    "model": "qwen3-coder:30b",
     "keep_alive": "2m",
     "messages": [{"role": "user", "content": "Stay loaded briefly."}]
   }' | jq .
@@ -419,12 +429,12 @@ Per-request keep_alive can be set in payload if your client supports sending it.
 
 ## LibreChat Configuration
 
-- Base URL (recommended with policy routing): `http://ORIN_IP:4000/v1`
+- Base URL (recommended with policy routing): `http://ORIN_IP:4000/v1` (requires `proxy` profile)
 - Model IDs:
   - `qwen3-coder:30b`
   - `qwen3.6:35b-a3b`
   - `nemotron-cascade-2:30b` (optional if pulled)
-  - `qwen2.5-coder:32b-instruct`
+  - `qwen3-coder:30b`
 - Set LibreChat default model to `qwen3.6:35b-a3b`.
 
 ## Jetson Runtime Notes
@@ -441,7 +451,7 @@ Per-request keep_alive can be set in payload if your client supports sending it.
   - `qwen3-coder:30b` -> `keep_alive=-1`, `think=false`
   - `qwen3.6:35b-a3b` -> `keep_alive=-1` (stay loaded)
   - `nemotron-cascade-2:30b` -> `keep_alive=10m`, `think=true`
-  - `qwen2.5-coder:32b-instruct` -> `keep_alive=0` (unload after request)
+  - `qwen3-coder:30b` -> `keep_alive=0` (unload after request)
 - Global fallback default on Ollama: `OLLAMA_KEEP_ALIVE=10m`.
 - Loading `nemotron-cascade-2:30b` while both warm models are resident exceeds the two-warm budget. Ollama will evict one warm model to make room because `OLLAMA_MAX_LOADED_MODELS=2`, so expect a one-time reload penalty on the next call to the evicted model after the verifier runs.
 - Leave the verifier at `keep_alive: 10m` so it does not remain resident longer than necessary.

@@ -1,13 +1,40 @@
+# Coding profiles get large context for tool-using agents (Zoo Code, Continue).
+# Chat/reasoning profiles get whatever fits comfortably alongside the coder
+# when both must coexist on the 64GB Orin.
+#
+# Rule of thumb on Orin 64GB:
+#   - One resident 30B at num_ctx=16384 ≈ 19-22 GB GPU
+#   - One resident 35B-A3B at num_ctx=32768 ≈ 26-30 GB GPU
+#   - Keep total resident <~50 GB to leave headroom for KV growth + embedder.
+
 models:
   - model: qwen3-coder:30b
     keep_alive: -1
     think: false
+    warmup: true
+    options:
+      num_ctx: 65536
+      num_batch: 512
+      temperature: 0.1
+      top_p: 0.9
+      repeat_penalty: 1.05
+
   - model: qwen3.6:35b-a3b
-    keep_alive: -1
+    keep_alive: 0
     think: true
+    warmup: false
+    options:
+      num_ctx: 32768
+      num_batch: 512
+      temperature: 0.6
+      top_p: 0.95
+
   - model: nemotron-cascade-2:30b
     keep_alive: 10m
     think: true
-  - model: qwen2.5-coder:32b-instruct
-    keep_alive: 0
-    think: true
+    warmup: false
+    options:
+      num_ctx: 16384
+      num_batch: 512
+      temperature: 0.5
+      top_p: 0.9

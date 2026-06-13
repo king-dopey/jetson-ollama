@@ -3,6 +3,9 @@ from pathlib import Path
 import sys
 import types
 import unittest
+import logging
+
+logging.getLogger("router").setLevel(logging.WARNING)
 
 ROUTER_DIR = Path(__file__).resolve().parents[1]
 os.environ["MODEL_POLICY_FILE"] = str(ROUTER_DIR / "model_policy.yml")
@@ -86,50 +89,73 @@ from app import MODEL_POLICY, _build_ollama_payload  # noqa: E402
 
 class RouterPayloadTests(unittest.TestCase):
     def test_model_policy_includes_all_served_models(self):
-        self.assertEqual(MODEL_POLICY["qwen3-coder:30b"], {"keep_alive": -1, "think": False})
-        self.assertEqual(MODEL_POLICY["qwen3.6:35b-a3b"], {"keep_alive": -1, "think": True})
-        self.assertEqual(MODEL_POLICY["nemotron-cascade-2:30b"], {"keep_alive": "10m", "think": True})
-        self.assertEqual(MODEL_POLICY["qwen2.5-coder:32b-instruct"], {"keep_alive": 0, "think": True})
+        coder = MODEL_POLICY["qwen3-coder:30b"]
+        self.assertEqual(coder["keep_alive"], -1)
+        self.assertEqual(coder["think"], False)
+        self.assertEqual(coder["options"]["num_ctx"], 65536)
+        self.assertTrue(coder["warmup"])
 
-    def test_build_payload_forwards_options_format_and_keep_alive(self):
-        schema = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "cue_selection",
-                "schema": {
-                    "type": "object",
-                    "properties": {"cue_ids": {"type": "array", "items": {"type": "string"}}},
-                    "required": ["cue_ids"],
-                },
-            },
-        }
+        thinker = MODEL_POLICY["qwen3.6:35b-a3b"]
+        self.assertEqual(thinker["keep_alive"], 0)
+        self.assertEqual(thinker["think"], True)
+        self.assertEqual(thinker["options"]["num_ctx"], 32768)
+        self.assertEqual(thinker["warmup"], False)
+
+        verifier = MODEL_POLICY["nemotron-cascade-2:30b"]
+        self.assertEqual(verifier["keep_alive"], "10m")
+        self.assertEqual(verifier["think"], True)
+        self.assertEqual(verifier["options"]["num_ctx"], 16384)
+        self.assertEqual(verifier["warmup"], False)
+
+    def test_build_payload_forwards_unlocked_options_format_and_keep_alive(self):
         body = {
             "model": "qwen3-coder:30b",
-            "messages": [{"role": "user", "content": "Return strict JSON."}],
-            "keep_alive": "25m",
-            "temperature": 0.2,
-            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hi"}],
+            "keep_alive": "5m",
+            "format": "json",
             "options": {
-                "num_ctx": 65536,
-                "num_predict": 400,
-                "cache_type_k": "q8_0",
-                "cache_type_v": "q8_0",
-                "num_keep": 128,
+                "num_batch": 1024,          # not policy-locked: client should win
+                "repeat_penalty": 1.2,       # not policy-locked: client should win
             },
-            "format": schema,
+            "temperature": 0.4,
+            "max_tokens": 256,
         }
-
         payload = _build_ollama_payload(body, think=False)
 
-        self.assertEqual(payload["keep_alive"], "25m")
-        self.assertEqual(payload["think"], False)
-        self.assertEqual(payload["format"], schema)
+        self.assertEqual(payload["keep_alive"], "5m")
+        self.assertEqual(payload["format"], "json")
+        self.assertEqual(payload["options"]["num_batch"], 1024)
+        self.assertEqual(payload["options"]["repeat_penalty"], 1.2)
+        self.assertEqual(payload["options"]["temperature"], 0.4)
+        self.assertEqual(payload["options"]["num_predict"], 256)
+        # Policy default still present because client did not override it.
         self.assertEqual(payload["options"]["num_ctx"], 65536)
-        self.assertEqual(payload["options"]["num_predict"], 400)
-        self.assertEqual(payload["options"]["cache_type_k"], "q8_0")
-        self.assertEqual(payload["options"]["cache_type_v"], "q8_0")
-        self.assertEqual(payload["options"]["num_keep"], 128)
-        self.assertEqual(payload["options"]["temperature"], 0.2)
+
+
+    def test_build_payload_policy_num_ctx_overrides_client(self):
+        body = {
+            "model": "qwen3-coder:30b",
+            "messages": [{"role": "user", "content": "hi"}],
+            "options": {"num_ctx": 16384},
+        }
+        with self.assertLogs("router", level="INFO") as cm:
+            payload = _build_ollama_payload(body, think=False)
+        self.assertEqual(payload["options"]["num_ctx"], 65536)
+        self.assertTrue(any("overriding client num_ctx" in m for m in cm.output))
+
+
+    def test_build_payload_uses_policy_defaults_when_client_silent(self):
+        body = {
+            "model": "qwen3-coder:30b",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        payload = _build_ollama_payload(body, think=False)
+        opts = payload["options"]
+        self.assertEqual(opts["num_ctx"], 65536)
+        self.assertEqual(opts["num_batch"], 512)
+        self.assertEqual(opts["temperature"], 0.1)
+        self.assertEqual(payload["keep_alive"], -1)  # from policy
+
 
     def test_build_payload_uses_model_keep_alive_when_request_omits_it(self):
         body = {

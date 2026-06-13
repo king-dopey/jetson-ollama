@@ -471,7 +471,7 @@ This phase is the most failure-prone in the plan, so the acceptance bar is corre
     - Publish port `7333` on the host so the dev box can reach it.
     - Do **not** add bearer auth yet — Phase 5 handles that. LAN‑only exposure for now.
 
-11. **Profile awareness in `librechat.yaml`.** Add a comment block at the top noting which model entries are only available in the Orin's `chat` profile (`qwen3-coder:30b`, `nemotron-cascade-2:30b`, `qwen2.5-coder:32b-instruct`), and which work in both (`qwen3.6:35b-a3b`, embedder). This is documentation, not a guard — the guard is Phase 5.
+11. **Profile awareness in `librechat.yaml`.** Add a comment block at the top noting which model entries are only available in the Orin's `chat` profile (`qwen3-coder:30b`, `nemotron-cascade-2:30b`, `qwen3-coder:30b`), and which work in both (`qwen3.6:35b-a3b`, embedder). This is documentation, not a guard — the guard is Phase 5.
 
 12. **Document the new dataflow in `/home/docker-config/ask/README.md`:**
     - RAG embeddings now resolve to `http://ORIN_IP:11434` via the rag_api.

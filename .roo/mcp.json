@@ -1,0 +1,43 @@
+{
+	"mcpServers": {
+		"filesystem": {
+			"command": "docker",
+			"args": [
+				"run",
+				"-i",
+				"--rm",
+				"--mount",
+				"type=bind,src=/home/heaps/repos/model64,dst=/projects",
+				"mcp/filesystem",
+				"/projects"
+			],
+			"alwaysAllow": [
+				"read_file",
+				"list_directory",
+				"list_allowed_directories"
+			]
+		},
+		"playwright": {
+			"command": "docker",
+			"args": [
+				"run",
+				"-i",
+				"--rm",
+				"--init",
+				"--pull=always",
+				"mcr.microsoft.com/playwright/mcp@sha256:48cfafeaaf213c618fff8d2e311f33b170dd1eab87a351260cdb9c24a785fc50"
+			]
+		},
+		"git": {
+			"command": "docker",
+			"args": [
+				"run",
+				"--rm",
+				"-i",
+				"--mount",
+				"type=bind,src=/home/heaps/repos/model64,dst=/workspace",
+				"mcp/git"
+			]
+		}
+	}
+}
