@@ -107,6 +107,13 @@ class RouterPayloadTests(unittest.TestCase):
         self.assertEqual(verifier["options"]["num_ctx"], 16384)
         self.assertEqual(verifier["warmup"], False)
 
+        # Test new model
+        next_model = MODEL_POLICY["qwen3-coder-next:q4_K_M"]
+        self.assertEqual(next_model["keep_alive"], 0)
+        self.assertEqual(next_model["think"], False)
+        self.assertEqual(next_model["options"]["num_ctx"], 16384)
+        self.assertEqual(next_model["warmup"], False)
+
     def test_build_payload_forwards_unlocked_options_format_and_keep_alive(self):
         body = {
             "model": "qwen3-coder:30b",

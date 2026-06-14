@@ -91,6 +91,7 @@ The Orin 64 GB node is sized to keep two MoE models warm by default while leavin
 | `qwen3-coder:30b` | Strict-JSON and structured-output workloads for boundary selection and cue-ID extraction. | `-1` | `false` | `16384` | Do not raise above `32768` unless you first evict the other warm model. |
 | `qwen3.6:35b-a3b` | Narrative summarization workloads. | `-1` | `true` | `32768` | Hybrid attention keeps KV usage comparatively small. |
 | `nemotron-cascade-2:30b` | Optional reasoning verifier for ambiguous structured answers. | `10m` | `true` | `16384` | Only resident while actively in use; expect one warm-model eviction when it loads. |
+| `qwen3-coder-next:q4_K_M` | Alternative coding model with conservative settings. | `0` | `false` | `16384` | Large model that may cause Ollama to evict other loaded models from memory on Orin AGX 64GB. |
 
 ### Budget Math
 
@@ -212,7 +213,11 @@ ollama pull qwen3-coder:30b
 ollama pull qwen3.6:35b-a3b
 # Optional verifier:
 ollama pull nemotron-cascade-2:30b
+# Optional qwen3-coder-next:
+ollama pull qwen3-coder-next:q4_K_M
 ```
+
+The `qwen3-coder-next:q4_K_M` model is large and may cause Ollama to evict other loaded models from memory on Orin AGX 64GB. It is recommended to start with `num_ctx=16384` for optimal memory usage.
 
 If you want Compose to trigger the optional verifier pull after Ollama becomes healthy, run:
 

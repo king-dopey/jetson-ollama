@@ -102,6 +102,17 @@ models:
       num_batch: 512
       temperature: 0.6
       top_p: 0.95
+
+  - model: qwen3-coder-next:q4_K_M
+    keep_alive: 0
+    think: false
+    warmup: false
+    options:
+      num_ctx: 16384
+      num_batch: 256
+      temperature: 0.2
+      top_p: 0.9
+      repeat_penalty: 1.05
 ```
 
 ## Integration with Ollama
