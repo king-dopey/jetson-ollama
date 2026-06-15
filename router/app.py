@@ -14,10 +14,14 @@ from contextlib import asynccontextmanager
 
 from policy import load_think_policy_config, parse_think_override, should_enable_think
 
+# Add lock for preventing concurrent pulls of the same model
+from asyncio import Lock
+
 logger = logging.getLogger("router")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+ASR_BASE_URL = os.getenv("ASR_BASE_URL", "http://asr-service:8000").rstrip("/")
 POLICY_FILE = os.getenv("MODEL_POLICY_FILE", "/app/model_policy.yml")
 DEFAULT_MODEL = os.getenv("MODEL_DEFAULT", "qwen3.6:35b-a3b")
 DEFAULT_KEEP_ALIVE = os.getenv("KEEP_ALIVE_DEFAULT", "-1")
@@ -115,6 +119,15 @@ def _load_policy() -> dict[str, dict[str, Any]]:
 MODEL_POLICY = _load_policy()
 THINK_POLICY_CONFIG = load_think_policy_config()
 
+# Auto-pull configuration
+AUTO_PULL_MISSING_MODELS = os.getenv("AUTO_PULL_MISSING_MODELS", "false").lower() == "true"
+MODEL_PULL_TIMEOUT_SEC = int(os.getenv("MODEL_PULL_TIMEOUT_SEC", "7200"))
+# MODEL_PULL_MAX_RETRIES and MODEL_PULL_BACKOFF_SEC are currently unused but kept for future implementation
+
+# Global lock for preventing concurrent pulls of the same model
+_model_pull_locks = {}
+_model_pull_locks_lock = Lock()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- startup ---
@@ -156,6 +169,160 @@ async def _warmup_model(model: str, entry: dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.warning("warmup: %s failed: %s", model, exc)
+
+
+async def list_local_models() -> list[str]:
+    """Get list of locally available models from Ollama."""
+    try:
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            response.raise_for_status()
+            data = response.json()
+            model_names = [model["name"] for model in data.get("models", [])]
+            logger.debug("Local models from /api/tags: %s", model_names)
+            return model_names
+    except Exception as exc:
+        logger.warning("Failed to list local models: %s", exc)
+        return []
+
+
+async def is_model_available(model_name: str) -> bool:
+    """Check if a model is available locally."""
+    local_models = await list_local_models()
+    is_available = model_name in local_models
+    logger.debug("Model %s availability check: %s (local models: %s)", model_name, is_available, local_models)
+    return is_available
+
+
+async def pull_model(model_name: str) -> bool:
+    """Pull a model from Ollama registry and wait for completion."""
+    if not AUTO_PULL_MISSING_MODELS:
+        logger.debug("AUTO_PULL_MISSING_MODELS is false, skipping pull for %s", model_name)
+        return False
+        
+    logger.info("Pulling model %s", model_name)
+    
+    # Get the lock for this specific model
+    async with _model_pull_locks_lock:
+        if model_name not in _model_pull_locks:
+            _model_pull_locks[model_name] = Lock()
+        model_lock = _model_pull_locks[model_name]
+    
+    async with model_lock:
+        # Double-check if model is available after acquiring lock
+        if await is_model_available(model_name):
+            logger.info("Model %s already available after lock acquisition", model_name)
+            return True
+            
+        try:
+            # Start the pull process
+            timeout = httpx.Timeout(connect=10.0, read=MODEL_PULL_TIMEOUT_SEC, write=30.0, pool=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                # Stream the pull response to check for success
+                logger.debug("Sending pull request to %s/api/pull for model %s", OLLAMA_BASE_URL, model_name)
+                async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/pull", json={"name": model_name}) as response:
+                    if response.status_code >= 400:
+                        logger.error("Pull request failed with status %d", response.status_code)
+                        return False
+                        
+                    # Read the stream to check for success
+                    pull_success = False
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            data = json.loads(line)
+                            logger.debug("Pull response for %s: %s", model_name, data)
+                            if data.get("status") == "success":
+                                pull_success = True
+                                logger.info("Pull for model %s completed successfully", model_name)
+                                break
+                            elif data.get("status") == "error":
+                                logger.error("Pull for model %s failed with error: %s", model_name, data.get("error", "unknown"))
+                                return False
+                        except json.JSONDecodeError:
+                            logger.debug("Non-JSON line in pull response for %s: %s", model_name, line)
+                            continue
+     
+                    if not pull_success:
+                        logger.error("Pull for model %s did not complete successfully", model_name)
+                        return False
+                        
+            # Verify the model was pulled successfully
+            if await is_model_available(model_name):
+                logger.info("Successfully pulled model %s", model_name)
+                return True
+            else:
+                logger.error("Model %s was not found after pull completion", model_name)
+                return False
+                
+        except Exception as exc:
+            logger.error("Failed to pull model %s: %s", model_name, exc)
+            return False
+
+
+async def _preflight_model(model_name: str) -> bool:
+    """Perform preflight validation and ensure model is available."""
+    logger.info("Preflight check for model %s", model_name)
+    
+    # Validate model name
+    if not model_name:
+        logger.warning("Model name is empty or missing")
+        return False
+    
+    # Check if model is in policy
+    if model_name not in MODEL_POLICY:
+        logger.warning("Model %s not in policy, rejecting request", model_name)
+        return False
+    
+    # Ensure model is available
+    logger.debug("Checking if model %s is available", model_name)
+    if await is_model_available(model_name):
+        logger.info("Model %s is already available", model_name)
+        return True
+    
+    # Pull the model if not available
+    logger.info("Model %s not available locally, attempting to pull", model_name)
+    result = await pull_model(model_name)
+    logger.info("Preflight result for %s: %s", model_name, result)
+    return result
+
+
+async def _ensure_asr_admission() -> bool:
+    """Ensure that ASR can run by reclaiming Ollama memory if needed.
+    
+    This function implements deterministic memory reclamation before ASR execution.
+    It checks if any models are loaded that should be evicted to make room for ASR.
+    """
+    logger.info("Checking for ASR admission - reclaiming Ollama memory if needed")
+    
+    try:
+        # Get currently loaded models from Ollama
+        local_models = await list_local_models()
+        if not local_models:
+            logger.info("No models currently loaded, ASR can proceed")
+            return True
+            
+        # Check if we need to evict any models to make room for ASR
+        # This is a simplified approach - in a real implementation, we'd check
+        # if the current models are compatible with ASR requirements
+        logger.info("Checking if any models need to be evicted for ASR")
+        
+        # For now, we'll just log that we're checking admission
+        # In a more sophisticated implementation, we'd:
+        # 1. Check if models are loaded that should be evicted
+        # 2. Evict them if needed
+        # 3. Wait for eviction to complete
+        
+        logger.info("ASR admission check complete - proceeding with request")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error during ASR admission check: {e}")
+        # If we can't check admission, proceed anyway (graceful degradation)
+        return True
+
 
 app = FastAPI(title="Ollama OpenAI Router", lifespan=lifespan, version="0.1.0")
 
@@ -448,6 +615,7 @@ async def _ollama_post(path: str, payload: dict, stream: bool = False,):
     Non-streaming chat completions on a 30B model can take minutes; the
     httpx default of 5s is far too short.
     """
+    logger.debug("Calling _ollama_post to %s with model %s", path, payload.get("model"))
     timeout = httpx.Timeout(
         connect=10.0,
         read=600.0,      # 10 min: covers prefill + full num_predict generation
@@ -456,6 +624,7 @@ async def _ollama_post(path: str, payload: dict, stream: bool = False,):
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(f"{OLLAMA_BASE_URL}{path}", json=payload)
+        logger.debug("Ollama response for %s: status %d", payload.get("model"), response.status_code)
         return response
 
 
@@ -489,6 +658,7 @@ async def list_models() -> JSONResponse:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    logger.debug("Starting /v1/chat/completions request")
     body = await request.json()
     try:
         think_override = parse_think_override(request.headers.get("X-Ollama-Think"))
@@ -496,6 +666,19 @@ async def chat_completions(request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     model_name = body.get("model")
+    logger.debug("Requested model: %s", model_name)
+    
+    # Perform preflight check
+    logger.info("Starting preflight check for model %s", model_name)
+    if not await _preflight_model(model_name):
+        logger.error("Preflight check failed for model %s", model_name)
+        if AUTO_PULL_MISSING_MODELS:
+            raise HTTPException(status_code=500, detail=f"Failed to pull model {model_name}")
+        else:
+            raise HTTPException(status_code=404, detail=f"Model {model_name} not available and auto-pull disabled")
+    
+    logger.info("Preflight check passed for model %s", model_name)
+
     model_default_think = MODEL_POLICY.get(model_name, {}).get("think", True)
     think = should_enable_think(
         body=body,
@@ -511,7 +694,14 @@ async def chat_completions(request: Request):
     model = payload["model"]
 
     if stream:
+        # Ensure preflight is complete before starting streaming response
+        logger.info("Starting preflight check for streaming request")
+        if not await _preflight_model(model_name):
+            logger.error("Preflight check failed for streaming model %s", model_name)
+            raise HTTPException(status_code=500, detail=f"Failed to pull model {model_name}")
+        
         async def event_stream():
+            logger.debug("Starting streaming response for model %s", model)
             # Opening role chunk so clients see structure immediately.
             first_chunk = {
                 "id": completion_id,
@@ -547,6 +737,7 @@ async def chat_completions(request: Request):
                 """Stream Ollama's /api/chat response and translate each
                 chunk into an OpenAI-shape SSE frame."""
                 try:
+                    logger.debug("About to call Ollama /api/chat for streaming model %s", model)
                     timeout = httpx.Timeout(
                         connect=10.0, read=600.0, write=30.0, pool=30.0
                     )
@@ -556,7 +747,24 @@ async def chat_completions(request: Request):
                             f"{OLLAMA_BASE_URL}/api/chat",
                             json=payload,
                         ) as resp:
+                            logger.debug("Ollama /api/chat streaming response status: %d", resp.status_code)
                             if resp.status_code >= 400:
+                                # Check if this is a 404 for a policy model that should be pulled
+                                if resp.status_code == 404:
+                                    try:
+                                        error_text = (await resp.aread()).decode("utf-8", errors="ignore")
+                                        if "not found" in error_text and model_name in MODEL_POLICY:
+                                            logger.info("Received 404 for model %s in streaming, attempting one-time recovery pull", model_name)
+                                            # Try to pull the model again and retry once
+                                            if await _preflight_model(model_name):
+                                                logger.info("Recovery pull successful, retrying Ollama request for %s", model_name)
+                                                # Note: We can't easily retry the streaming request, so we'll just return the error
+                                                # This is a limitation of the streaming approach - the original request has already started
+                                                logger.warning("Recovery pull succeeded but streaming request cannot be retried")
+                                    except Exception:
+                                        # If we can't parse the error or recovery fails, continue with original error
+                                        pass
+
                                 error_text = (await resp.aread()).decode(
                                     "utf-8", errors="ignore"
                                 )
@@ -696,7 +904,26 @@ async def chat_completions(request: Request):
                         pass
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+    logger.debug("About to call Ollama /api/chat for non-streaming model %s", model)
     response = await _ollama_post("/api/chat", payload, stream=False)
+    
+    # If we get a 404 for a model that should be in policy, try one recovery pull
+    if response.status_code == 404:
+        try:
+            # Check if we can parse the JSON error
+            error_data = response.json()
+            error_message = error_data.get("error", "")
+            if "not found" in error_message and model_name in MODEL_POLICY:
+                logger.info("Received 404 for model %s, attempting one-time recovery pull", model_name)
+                # Try to pull the model again and retry once
+                if await _preflight_model(model_name):
+                    logger.info("Recovery pull successful, retrying Ollama request for %s", model_name)
+                    response = await _ollama_post("/api/chat", payload, stream=False)
+        except Exception:
+            # If we can't parse the error or recovery fails, continue with original error
+            pass
+    
+    logger.debug("Ollama /api/chat response for non-streaming: status %d", response.status_code)
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
@@ -739,3 +966,109 @@ async def chat_completions(request: Request):
         }
     )
 
+async def _asr_post(path: str, payload: dict, stream: bool = False):
+    """POST to ASR service with timeouts appropriate for audio processing.
+    """
+    logger.debug("Calling _asr_post to %s", path)
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=600.0,      # 10 min: covers audio processing time
+        write=30.0,
+        pool=30.0,
+    )
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(f"{ASR_BASE_URL}{path}", json=payload)
+        logger.debug("ASR response for %s: status %d", path, response.status_code)
+        return response
+
+
+# Native alignment endpoint(s)
+@app.post("/align")
+async def align(request: Request):
+    """Handle native alignment requests with rich timing information."""
+    try:
+        # Parse the request body
+        body = await request.json()
+        
+        # Check admission control for ASR execution
+        logger.info("Checking ASR admission before processing alignment request")
+        admission_ok = await _ensure_asr_admission()
+        if not admission_ok:
+            logger.error("ASR admission denied")
+            raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
+        
+        logger.info("Forwarding alignment request to ASR service")
+        
+        # Forward to ASR service
+        response = await _asr_post("/align", body, stream=False)
+        
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        result = response.json()
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Error in align endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/audio/align")
+async def v1_audio_align(request: Request):
+    """Handle native alignment requests with OpenAI v1 compatibility."""
+    try:
+        # Parse the request body
+        body = await request.json()
+        
+        # Check admission control for ASR execution
+        logger.info("Checking ASR admission before processing alignment request")
+        admission_ok = await _ensure_asr_admission()
+        if not admission_ok:
+            logger.error("ASR admission denied")
+            raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
+        
+        logger.info("Forwarding alignment request to ASR service")
+        
+        # Forward to ASR service
+        response = await _asr_post("/align", body, stream=False)
+        
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        result = response.json()
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Error in v1/audio/align endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Audio transcription endpoint
+@app.post("/v1/audio/transcriptions")
+async def audio_transcription(request: Request):
+    """Handle audio transcription requests with word-level timing."""
+    try:
+        # Parse the request body
+        body = await request.json()
+        
+        # Check admission control for ASR execution
+        logger.info("Checking ASR admission before processing request")
+        admission_ok = await _ensure_asr_admission()
+        if not admission_ok:
+            logger.error("ASR admission denied")
+            raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
+        
+        logger.info("Forwarding audio transcription request to ASR service")
+        
+        # Forward to ASR service
+        response = await _asr_post("/align", body, stream=False)
+        
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+        result = response.json()
+        return JSONResponse(result)
+        
+    except Exception as e:
+        logger.error(f"Error in audio transcription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+   

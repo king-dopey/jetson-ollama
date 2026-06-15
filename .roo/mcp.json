@@ -14,8 +14,10 @@
 			"alwaysAllow": [
 				"read_file",
 				"list_directory",
-				"list_allowed_directories"
-			]
+				"list_allowed_directories",
+				"create_directory"
+			],
+			"disabled": false
 		},
 		"playwright": {
 			"command": "docker",

@@ -19,6 +19,60 @@ models:
       top_p: 0.9
       repeat_penalty: 1.05
 
+  - model: qwen3:4b
+    keep_alive: 0
+    think: true
+    warmup: false
+    options:
+      num_ctx: 65536
+      num_batch: 512
+      temperature: 0.2
+      top_p: 0.9
+      repeat_penalty: 1.05
+
+  - model: qwen3-vl:4b
+    keep_alive: 0
+    think: true
+    warmup: false
+    options:
+      num_ctx: 32768
+      num_batch: 256
+      temperature: 0.2
+      top_p: 0.9
+      repeat_penalty: 1.05
+
+  - model: gemma4:12b
+    keep_alive: 0
+    think: true
+    warmup: false
+    options:
+      num_ctx: 32768
+      num_batch: 256
+      temperature: 0.3
+      top_p: 0.95
+      repeat_penalty: 1.05
+
+  - model: devstral-small-2:24b
+    keep_alive: 0
+    think: false
+    warmup: false
+    options:
+      num_ctx: 32768
+      num_batch: 256
+      temperature: 0.15
+      top_p: 0.9
+      repeat_penalty: 1.05
+
+  - model: reader-lm:1.5b
+    keep_alive: 0
+    think: false
+    warmup: false
+    options:
+      num_ctx: 32768
+      num_batch: 256
+      temperature: 0.0
+      top_p: 0.9
+
   - model: qwen3.6:35b-a3b
     keep_alive: 0
     think: true

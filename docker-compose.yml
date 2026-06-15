@@ -55,3 +55,36 @@ services:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
     command: ["ollama pull nemotron-cascade-2:30b"]
+
+  asr:
+    profiles: ["asr"]
+    build:
+      context: ./asr
+      dockerfile: Dockerfile
+    container_name: asr-service
+    restart: unless-stopped
+    environment:
+      ASR_ENABLED: ${ASR_ENABLED:-1}
+      ASR_PORT: ${ASR_PORT:-8000}
+      ASR_MODEL: ${ASR_MODEL:-whisper-large-v3-turbo}
+      ASR_MODEL_ACCURACY: ${ASR_MODEL_ACCURACY:-whisper-large-v3}
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-float16}
+      ASR_FORCE_ALIGNMENT: ${ASR_FORCE_ALIGNMENT:-1}
+      ASR_KEEP_WARM: ${ASR_KEEP_WARM:-0}
+      ASR_MODEL_CACHE: ${ASR_MODEL_CACHE:-/app/models}
+      ASR_LOG_LEVEL: ${ASR_LOG_LEVEL:-info}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+    ports:
+      - "${ASR_PORT:-8000}:${ASR_PORT:-8000}"
+    volumes:
+      - ./asr/models:/app/models:rw
+      - /tmp:/tmp:rw
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:${ASR_PORT:-8000}/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

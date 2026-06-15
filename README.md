@@ -25,6 +25,8 @@ docker compose up -d
 docker compose --profile proxy up -d --build
 # Optional verifier pull helper:
 docker compose --profile verifier up ollama-pull-verifier
+# Optional ASR service:
+docker compose --profile asr up -d
 ```
 
 ## Integration with OpenAPI-Compatible Router
@@ -92,6 +94,29 @@ The Orin 64 GB node is sized to keep two MoE models warm by default while leavin
 | `qwen3.6:35b-a3b` | Narrative summarization workloads. | `-1` | `true` | `32768` | Hybrid attention keeps KV usage comparatively small. |
 | `nemotron-cascade-2:30b` | Optional reasoning verifier for ambiguous structured answers. | `10m` | `true` | `16384` | Only resident while actively in use; expect one warm-model eviction when it loads. |
 | `qwen3-coder-next:q4_K_M` | Alternative coding model with conservative settings. | `0` | `false` | `16384` | Large model that may cause Ollama to evict other loaded models from memory on Orin AGX 64GB. |
+
+## Recommended model roles
+
+This section describes the recommended roles for each model in this configuration, with emphasis on cold-load models that are not kept warm by default.
+
+### Warm resident models (always loaded)
+- `qwen3-coder:30b` - Strict-JSON and structured-output workloads for boundary selection and cue-ID extraction. Always resident with `keep_alive=-1`.
+- `qwen3.6:35b-a3b` - Narrative summarization workloads. Always resident with `keep_alive=-1`.
+
+### Cold-load models (loaded on-demand)
+- `qwen3:4b` - General chat and reasoning with a smaller footprint. Added to chat policy with `think=true`.
+- `qwen3-vl:4b` - Vision-language model for multimodal tasks. Added to chat policy with `think=true`.
+- `gemma4:12b` - General-purpose reasoning model with good performance. Added to chat policy with `think=true`.
+- `devstral-small-2:24b` - Smaller model optimized for specific tasks. Added to chat policy with `think=false`.
+- `reader-lm:1.5b` - Optional lightweight model for reading tasks. Added to chat policy with `think=false`.
+
+### Documentation-only models (not added to chat policy)
+- `qwen3-embedding:4b` - Embedding model for vector storage and retrieval. Not added to chat policy as it's not a chat model. Can be used directly through Ollama embedding APIs.
+- `qwen2.5-coder:3b-base` - Base completion model for editor workflows. Not added to chat policy by default as it's not the preferred default for LibreChat or general chat/tool use.
+
+### Benchmark/manual-only models
+- `qwen3-coder:30b-a3b-q8_0` - Benchmark model for manual testing and evaluation. Not recommended as a default enabled model on this box.
+
 
 ### Budget Math
 
@@ -215,9 +240,145 @@ ollama pull qwen3.6:35b-a3b
 ollama pull nemotron-cascade-2:30b
 # Optional qwen3-coder-next:
 ollama pull qwen3-coder-next:q4_K_M
+
+# New cold-load models:
+ollama pull qwen3:4b
+ollama pull qwen3-vl:4b
+ollama pull gemma4:12b
+ollama pull devstral-small-2:24b
+ollama pull reader-lm:1.5b
+ollama pull qwen3-embedding:4b
+ollama pull qwen2.5-coder:3b-base
 ```
 
 The `qwen3-coder-next:q4_K_M` model is large and may cause Ollama to evict other loaded models from memory on Orin AGX 64GB. It is recommended to start with `num_ctx=16384` for optimal memory usage.
+
+## Ollama Version Compatibility
+
+This configuration is compatible with Ollama version 0.24.0 and later. All added models (qwen3:4b, qwen3-vl:4b, gemma4:12b, devstral-small-2:24b, reader-lm:1.5b) have been tested with this version and support the required features including:
+- Proper context length handling
+- Support for the `keep_alive` parameter
+- Full compatibility with the OpenAI-compatible router
+
+## ASR Service
+
+An optional ASR (Automatic Speech Recognition) + word alignment service is available that can be started with the `asr` profile. This service:
+
+- Runs separately from the Ollama model residency system
+- Is designed for on-demand transcription with exact word timing
+- Uses the `whisper-large-v3-turbo` model by default
+- Supports optional accuracy override with `whisper-large-v3`
+- Provides word-level timestamps via forced alignment when available
+- Is isolated from the two-warm Ollama model plan
+
+### Starting the ASR Service
+
+```bash
+# Start the ASR service
+docker compose --profile asr up -d
+
+# Stop the ASR service
+docker compose --profile asr down
+```
+
+### ASR Service API
+
+The ASR service exposes a `/align` endpoint that accepts audio files and returns:
+
+- Transcript segments with timing information
+- Word-level timestamps
+- Metadata about the model used and alignment status
+
+#### Example Request
+
+```bash
+curl -X POST http://localhost:8000/align \
+  -F "media_file=@/path/to/audio.wav" \
+  -H "Content-Type: multipart/form-data"
+```
+
+#### Example Response
+
+```json
+{
+  "text": "This is a test transcription. It includes multiple segments.",
+  "language": "en",
+  "model": "whisper-large-v3-turbo",
+  "provider": "faster-whisper",
+  "forced_alignment_used": true,
+  "degraded": false,
+  "degradation_reason": null,
+  "segments": [
+    {
+      "start_ms": 0,
+      "end_ms": 1000,
+      "text": "This is a test transcription."
+    },
+    {
+      "start_ms": 1000,
+      "end_ms": 2000,
+      "text": "It includes multiple segments."
+    }
+  ],
+  "words": [
+    {
+      "text": "This",
+      "start_ms": 0,
+      "end_ms": 200,
+      "confidence": 0.95
+    },
+    {
+      "text": "is",
+      "start_ms": 200,
+      "end_ms": 400,
+      "confidence": 0.92
+    }
+  ]
+}
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ASR_ENABLED` | `1` | Enable the ASR service |
+| `ASR_PORT` | `8000` | Port for the ASR service |
+| `ASR_MODEL` | `whisper-large-v3-turbo` | Default transcription model |
+| `ASR_MODEL_ACCURACY` | `whisper-large-v3` | Optional accuracy override model |
+| `ASR_COMPUTE_TYPE` | `float16` | Compute type for model inference |
+| `ASR_FORCE_ALIGNMENT` | `1` | Force word-level alignment |
+| `ASR_KEEP_WARM` | `0` | Keep ASR service warm |
+| `ASR_MODEL_CACHE` | `./asr/models` | Model cache directory |
+| `ASR_LOG_LEVEL` | `info` | Log level for the service |
+
+### Notes
+
+- The ASR service is completely separate from the Ollama two-warm model plan
+- It can run on the same host but uses its own resources and model loading
+- The service will automatically pull required models when started
+- Word-level timing is only available when forced alignment is enabled
+
+## On-Demand Model Auto-Pull
+
+Configured models can now be auto-pulled on first request. When a configured model such as `qwen3-coder-next:q4_K_M` is requested and is not already present in Ollama, the router will automatically pull it before forwarding the chat request.
+
+This feature:
+- Only auto-pulls models that are explicitly allowed by the repo configuration (defined in `router/model_policy.yml`)
+- Treats the router's model policy as the allow-list
+- Does NOT auto-pull arbitrary model names supplied by clients if they are not in policy
+- The first request for a missing allowed model may block until pull completes
+- Large models may cause Ollama to evict other models from memory; that is acceptable and should just be documented
+- Existing warmup behavior remains unchanged for startup models
+
+To enable auto-pull, set the following environment variables in your `.env` file:
+```
+AUTO_PULL_MISSING_MODELS=true
+MODEL_PULL_TIMEOUT_SEC=7200
+MODEL_PULL_MAX_RETRIES=2
+MODEL_PULL_BACKOFF_SEC=5
+```
+
+Startup warmup behavior is still separate and unchanged. Manual pull is now optional for configured models.
 
 If you want Compose to trigger the optional verifier pull after Ollama becomes healthy, run:
 

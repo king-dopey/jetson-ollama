@@ -119,6 +119,97 @@ models:
 
 This router is designed to work with the Ollama LLM serving node in this repository. It forwards requests to the Ollama service at `http://ollama:11434` by default, but can be configured to work with any Ollama instance.
 
+## Integration with ASR Service
+
+The ASR service can be run alongside this router. The ASR service is completely separate from the Ollama model residency system and provides a dedicated endpoint for speech-to-text with word-level timing extraction. It can be started with:
+
+```bash
+docker compose --profile asr up -d
+```
+
+The ASR service is designed to work independently of the Ollama two-warm model plan and can be used for audio processing tasks without affecting the LLM serving capabilities.
+
+## Native Alignment Endpoints
+
+The router exposes native alignment endpoints that forward to the ASR service while preserving the rich alignment response contract:
+
+- `/align` - Native alignment endpoint
+- `/v1/audio/align` - Namespaced OpenAI-compatible alignment endpoint
+
+These endpoints accept the same request format as the ASR service's `/align` endpoint and return the full alignment response with:
+
+- Transcript segments with timing information
+- Word-level timestamps
+- Metadata about the model used and alignment status
+
+Example request:
+
+```bash
+curl -X POST http://localhost:4000/align \
+  -F "media_file=@/path/to/audio.wav" \
+  -H "Content-Type: multipart/form-data"
+```
+
+Example response:
+
+```json
+{
+  "text": "This is a test transcription. It includes multiple segments.",
+  "language": "en",
+  "model": "whisper-large-v3-turbo",
+  "provider": "faster-whisper",
+  "forced_alignment_used": true,
+  "degraded": false,
+  "degradation_reason": null,
+  "segments": [
+    {
+      "start_ms": 0,
+      "end_ms": 1000,
+      "text": "This is a test transcription."
+    },
+    {
+      "start_ms": 1000,
+      "end_ms": 2000,
+      "text": "It includes multiple segments."
+    }
+  ],
+  "words": [
+    {
+      "text": "This",
+      "start_ms": 0,
+      "end_ms": 200,
+      "confidence": 0.95
+    },
+    {
+      "text": "is",
+      "start_ms": 200,
+      "end_ms": 400,
+      "confidence": 0.92
+    }
+  ]
+}
+```
+
+## On-Demand Model Auto-Pull
+
+Configured models can now be auto-pulled on first request. When a configured model such as `qwen3-coder-next:q4_K_M` is requested and is not already present in Ollama, the router will automatically pull it before forwarding the chat request.
+
+This feature:
+- Only auto-pulls models that are explicitly allowed by the repo configuration (defined in `model_policy.yml`)
+- Treats the router's model policy as the allow-list
+- Does NOT auto-pull arbitrary model names supplied by clients if they are not in policy
+- The first request for a missing allowed model may block until pull completes
+- Large models may cause Ollama to evict other models from memory; that is acceptable and should just be documented
+- Existing warmup behavior remains unchanged for startup models
+
+To enable auto-pull, set the following environment variables:
+```
+AUTO_PULL_MISSING_MODELS=true
+MODEL_PULL_TIMEOUT_SEC=7200
+MODEL_PULL_MAX_RETRIES=2
+MODEL_PULL_BACKOFF_SEC=5
+```
+
 ## Health Check
 
 ```bash
