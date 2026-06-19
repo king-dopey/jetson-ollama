@@ -5,6 +5,7 @@ import os
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import yaml
@@ -21,7 +22,9 @@ logger = logging.getLogger("router")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
-ASR_BASE_URL = os.getenv("ASR_BASE_URL", "http://asr-service:8000").rstrip("/")
+ASR_BASE_URL_ENV = os.getenv("ASR_BASE_URL", "").rstrip("/")
+ASR_PORT = int(os.getenv("ASR_PORT", "8000"))
+ASR_SCHEME = (os.getenv("ASR_SCHEME", "http") or "http").strip()
 POLICY_FILE = os.getenv("MODEL_POLICY_FILE", "/app/model_policy.yml")
 DEFAULT_MODEL = os.getenv("MODEL_DEFAULT", "qwen3.6:35b-a3b")
 DEFAULT_KEEP_ALIVE = os.getenv("KEEP_ALIVE_DEFAULT", "-1")
@@ -966,20 +969,131 @@ async def chat_completions(request: Request):
         }
     )
 
-async def _asr_post(path: str, payload: dict, stream: bool = False):
-    """POST to ASR service with timeouts appropriate for audio processing.
+def _resolve_asr_base_url(request: Request) -> str:
+    """Resolve ASR upstream base URL for alignment forwarding.
+
+    Priority:
+    1) Explicit ASR_BASE_URL override.
+    2) Infer from OLLAMA_BASE_URL host + ASR_PORT (models run on Orin).
+    3) Fallback to inbound router host.
     """
-    logger.debug("Calling _asr_post to %s", path)
+    if ASR_BASE_URL_ENV:
+        return ASR_BASE_URL_ENV
+
+    ollama_host = urlsplit(OLLAMA_BASE_URL).hostname
+    host = ollama_host or request.url.hostname or "127.0.0.1"
+    return f"{ASR_SCHEME}://{host}:{ASR_PORT}"
+
+
+async def _asr_post_json(base_url: str, path: str, payload: dict):
+    """POST JSON to ASR service with timeouts appropriate for audio processing."""
+    logger.debug("Calling _asr_post_json to %s", path)
     timeout = httpx.Timeout(
         connect=10.0,
-        read=600.0,      # 10 min: covers audio processing time
+        read=600.0,
         write=30.0,
         pool=30.0,
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(f"{ASR_BASE_URL}{path}", json=payload)
-        logger.debug("ASR response for %s: status %d", path, response.status_code)
+        response = await client.post(f"{base_url.rstrip('/')}{path}", json=payload)
+        logger.debug("ASR JSON response for %s: status %d", path, response.status_code)
         return response
+
+
+async def _asr_post_multipart(
+    base_url: str,
+    path: str,
+    *,
+    fields: dict[str, str],
+    file_field: str,
+    file_name: str,
+    file_bytes: bytes,
+    file_content_type: str,
+):
+    """POST multipart/form-data to ASR service."""
+    logger.debug("Calling _asr_post_multipart to %s", path)
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=600.0,
+        write=30.0,
+        pool=30.0,
+    )
+    files = {file_field: (file_name, file_bytes, file_content_type)}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{base_url.rstrip('/')}{path}",
+            data=fields,
+            files=files,
+        )
+        logger.debug("ASR multipart response for %s: status %d", path, response.status_code)
+        return response
+
+
+async def _forward_alignment_request(request: Request) -> JSONResponse:
+    """Forward alignment request to ASR using multipart or JSON, preserving upstream status."""
+    content_type = (request.headers.get("content-type") or "").lower()
+    asr_base_url = _resolve_asr_base_url(request)
+    logger.info("Alignment forward request content-type=%s", content_type or "<empty>")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        upload = form.get("media_file") or form.get("file")
+        if upload is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "cross_host_alignment_requires_multipart_upload: "
+                    "multipart request missing media_file/file"
+                ),
+            )
+
+        file_name = getattr(upload, "filename", "audio.wav") or "audio.wav"
+        file_content_type = getattr(upload, "content_type", "application/octet-stream") or "application/octet-stream"
+        file_bytes = await upload.read()
+
+        # Cross-host alignment must not rely on local filesystem paths.
+        if form.get("audio_path") is not None or form.get("media_path") is not None:
+            logger.warning("Dropping audio_path/media_path form fields for cross-host alignment forwarding")
+
+        fields: dict[str, str] = {}
+        for key in (
+            "model",
+            "model_override",
+            "model_accuracy",
+            "return_word_timestamps",
+            "prefer_forced_alignment",
+            "language",
+            "strict",
+            "response_format",
+        ):
+            value = form.get(key)
+            if value is not None:
+                fields[key] = str(value)
+
+        logger.info("Forwarding alignment upstream as multipart to %s/align", asr_base_url.rstrip("/"))
+        response = await _asr_post_multipart(
+            asr_base_url,
+            "/align",
+            fields=fields,
+            file_field="media_file",
+            file_name=file_name,
+            file_bytes=file_bytes,
+            file_content_type=file_content_type,
+        )
+    else:
+        logger.warning("Rejecting non-multipart alignment request for cross-host flow")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "cross_host_alignment_requires_multipart_upload: "
+                "send multipart/form-data with media_file and alignment fields"
+            ),
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return JSONResponse(response.json())
 
 
 # Native alignment endpoint(s)
@@ -987,27 +1101,16 @@ async def _asr_post(path: str, payload: dict, stream: bool = False):
 async def align(request: Request):
     """Handle native alignment requests with rich timing information."""
     try:
-        # Parse the request body
-        body = await request.json()
-        
-        # Check admission control for ASR execution
         logger.info("Checking ASR admission before processing alignment request")
         admission_ok = await _ensure_asr_admission()
         if not admission_ok:
             logger.error("ASR admission denied")
             raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
-        
+
         logger.info("Forwarding alignment request to ASR service")
-        
-        # Forward to ASR service
-        response = await _asr_post("/align", body, stream=False)
-        
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-            
-        result = response.json()
-        return JSONResponse(result)
-        
+        return await _forward_alignment_request(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in align endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1017,58 +1120,35 @@ async def align(request: Request):
 async def v1_audio_align(request: Request):
     """Handle native alignment requests with OpenAI v1 compatibility."""
     try:
-        # Parse the request body
-        body = await request.json()
-        
-        # Check admission control for ASR execution
         logger.info("Checking ASR admission before processing alignment request")
         admission_ok = await _ensure_asr_admission()
         if not admission_ok:
             logger.error("ASR admission denied")
             raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
-        
+
         logger.info("Forwarding alignment request to ASR service")
-        
-        # Forward to ASR service
-        response = await _asr_post("/align", body, stream=False)
-        
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-            
-        result = response.json()
-        return JSONResponse(result)
-        
+        return await _forward_alignment_request(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in v1/audio/align endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Audio transcription endpoint
+
 @app.post("/v1/audio/transcriptions")
 async def audio_transcription(request: Request):
     """Handle audio transcription requests with word-level timing."""
     try:
-        # Parse the request body
-        body = await request.json()
-        
-        # Check admission control for ASR execution
         logger.info("Checking ASR admission before processing request")
         admission_ok = await _ensure_asr_admission()
         if not admission_ok:
             logger.error("ASR admission denied")
             raise HTTPException(status_code=503, detail="ASR admission denied - insufficient resources")
-        
+
         logger.info("Forwarding audio transcription request to ASR service")
-        
-        # Forward to ASR service
-        response = await _asr_post("/align", body, stream=False)
-        
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-            
-        result = response.json()
-        return JSONResponse(result)
-        
+        return await _forward_alignment_request(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in audio transcription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-   

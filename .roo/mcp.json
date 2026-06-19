@@ -7,15 +7,18 @@
 				"-i",
 				"--rm",
 				"--mount",
-				"type=bind,src=/home/heaps/repos/model64,dst=/projects",
+				"type=bind,src=/home/heaps/repos/model64,dst=/home/heaps/repos/model64",
 				"mcp/filesystem",
-				"/projects"
+				"/home/heaps/repos/model64"
 			],
 			"alwaysAllow": [
 				"read_file",
 				"list_directory",
 				"list_allowed_directories",
-				"create_directory"
+				"create_directory",
+				"search_files",
+				"read_multiple_files",
+				"directory_tree"
 			],
 			"disabled": false
 		},
@@ -28,6 +31,13 @@
 				"--init",
 				"--pull=always",
 				"mcr.microsoft.com/playwright/mcp@sha256:48cfafeaaf213c618fff8d2e311f33b170dd1eab87a351260cdb9c24a785fc50"
+			],
+			"alwaysAllow": [
+				"browser_install",
+				"browser_wait_for",
+				"browser_snapshot",
+				"browser_console_messages",
+				"browser_navigate"
 			]
 		},
 		"git": {

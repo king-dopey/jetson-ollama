@@ -1,47 +1,50 @@
-import os
 import logging
-import asyncio
-import json
+import os
 import uuid
-from typing import Optional, List, Dict, Any
-from pathlib import Path
-import tempfile
-import shutil
+from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import whisper
-from faster_whisper import WhisperModel
 
-# Configure logging
+from providers.base import ASRProvider, ProviderConfig
+from providers.faster_whisper_provider import FasterWhisperProvider
+from providers.whisperx_provider import WhisperXProvider
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("asr")
 
-# ASR configuration from environment variables
 ASR_ENABLED = os.getenv("ASR_ENABLED", "0").lower() == "1"
 ASR_PORT = int(os.getenv("ASR_PORT", "8000"))
+ASR_DEFAULT_PROVIDER = os.getenv("ASR_DEFAULT_PROVIDER", "faster-whisper")
 ASR_MODEL = os.getenv("ASR_MODEL", "whisper-large-v3-turbo")
 ASR_MODEL_ACCURACY = os.getenv("ASR_MODEL_ACCURACY", "whisper-large-v3")
+ASR_ENGLISH_THROUGHPUT_MODEL = os.getenv("ASR_ENGLISH_THROUGHPUT_MODEL", "distil-large-v3.5-ct2")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
 ASR_FORCE_ALIGNMENT = os.getenv("ASR_FORCE_ALIGNMENT", "1").lower() == "1"
+ASR_DIARIZATION_ENABLED = os.getenv("ASR_DIARIZATION_ENABLED", "0").lower() == "1"
+ASR_LAZY_LOAD_ALIGNMENT = os.getenv("ASR_LAZY_LOAD_ALIGNMENT", "1").lower() == "1"
 ASR_KEEP_WARM = os.getenv("ASR_KEEP_WARM", "0").lower() == "1"
 ASR_MODEL_CACHE = os.getenv("ASR_MODEL_CACHE", "/app/models")
 ASR_LOG_LEVEL = os.getenv("ASR_LOG_LEVEL", "info")
 
-# Set log level
 logger.setLevel(getattr(logging, ASR_LOG_LEVEL.upper()))
 
-# Global model instance for caching
-_model_instance = None
+_providers: dict[str, ASRProvider] = {}
 
-# Pydantic models for request/response
+
 class AlignRequest(BaseModel):
+    audio_path: Optional[str] = None
     media_path: Optional[str] = None
-    media_file: Optional[UploadFile] = None
+    model: Optional[str] = None
     model_override: Optional[str] = None
+    model_accuracy: Optional[str] = None
+    return_word_timestamps: Optional[bool] = True
+    prefer_forced_alignment: Optional[bool] = True
     language: Optional[str] = None
     strict: Optional[bool] = False
+
 
 class Word(BaseModel):
     text: str
@@ -49,10 +52,12 @@ class Word(BaseModel):
     end_ms: int
     confidence: Optional[float] = None
 
+
 class Segment(BaseModel):
     start_ms: int
     end_ms: int
     text: str
+
 
 class AlignResponse(BaseModel):
     text: str
@@ -65,171 +70,198 @@ class AlignResponse(BaseModel):
     segments: List[Segment]
     words: List[Word]
 
-# FastAPI app
+
 app = FastAPI(
     title="ASR + Word Alignment Service",
     description="Speech-to-text service with word-level timing extraction",
-    version="1.0.0"
+    version="1.0.0",
 )
 
-def load_model():
-    """Load the ASR model once and cache it"""
-    global _model_instance
-    if _model_instance is None:
-        try:
-            logger.info(f"Loading ASR model: {ASR_MODEL}")
-            _model_instance = WhisperModel(
-                ASR_MODEL,
-                device="cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu",
-                compute_type=ASR_COMPUTE_TYPE,
-                download_root=ASR_MODEL_CACHE
-            )
-            logger.info("ASR model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load ASR model: {e}")
-            raise
-    return _model_instance
 
-def process_audio_file(file_path: str, language: Optional[str] = None) -> tuple:
-    """Process audio file and return transcription with timing information"""
+def get_provider(provider_name: str) -> ASRProvider:
+    """Get or create ASR provider instance."""
+    global _providers
+
+    if provider_name not in _providers:
+        config = ProviderConfig(
+            name=provider_name,
+            model=ASR_MODEL,
+            accuracy_model=ASR_MODEL_ACCURACY,
+            compute_type=ASR_COMPUTE_TYPE,
+            force_alignment=ASR_FORCE_ALIGNMENT,
+            diarization_enabled=ASR_DIARIZATION_ENABLED,
+            lazy_load_alignment=ASR_LAZY_LOAD_ALIGNMENT,
+        )
+
+        if provider_name == "faster-whisper":
+            _providers[provider_name] = FasterWhisperProvider(config)
+        elif provider_name == "whisperx":
+            _providers[provider_name] = WhisperXProvider(config)
+        else:
+            raise ValueError(f"Unknown provider: {provider_name}")
+
+    return _providers[provider_name]
+
+
+def process_audio_file(
+    file_path: str,
+    language: Optional[str] = None,
+    provider_name: str = "faster-whisper",
+    use_alignment: bool = False,
+) -> tuple[str, list[dict], list[dict], bool]:
+    """Process audio file and return transcription with timing information."""
     try:
-        # Load model if not already loaded
-        model = load_model()
-        
-        # Perform transcription with forced alignment if available
-        segments, info = model.transcribe(
+        provider = get_provider(provider_name)
+        full_text, segments_list, words_list = provider.transcribe(
             file_path,
             language=language,
-            task="transcribe",
-            beam_size=5,
-            best_of=5,
-            vad_filter=True,
-            word_timestamps=ASR_FORCE_ALIGNMENT
+            use_alignment=use_alignment,
         )
-        
-        # Convert segments to the expected format
-        segments_list = []
-        words_list = []
-        
-        # If we have word timestamps, we can extract them
-        if hasattr(info, 'words') and info.words:
-            # Process word-level timestamps
-            for word in info.words:
-                words_list.append(Word(
-                    text=word.word,
-                    start_ms=int(word.start * 1000),
-                    end_ms=int(word.end * 1000),
-                    confidence=word.probability if hasattr(word, 'probability') else None
-                ))
-        
-        # Process segments (transcript segments)
-        for segment in segments:
-            segments_list.append(Segment(
-                start_ms=int(segment.start * 1000),
-                end_ms=int(segment.end * 1000),
-                text=segment.text
-            ))
-        
-        # Get the full text
-        full_text = " ".join([seg.text for seg in segments_list])
-        
-        # Determine if forced alignment was used
-        forced_alignment_used = ASR_FORCE_ALIGNMENT and (hasattr(info, 'words') and info.words)
-        
+        forced_alignment_used = use_alignment and len(words_list) > 0
         return full_text, segments_list, words_list, forced_alignment_used
-        
-    except Exception as e:
-        logger.error(f"Error processing audio file: {e}")
-        raise
+    except Exception as exc:
+        message = f"provider '{provider_name}' processing failed: {exc}"
+        logger.error("Error processing audio file (%s): %s", provider_name, exc)
+        raise RuntimeError(message) from exc
+
+
+def _is_multipart(content_type: str) -> bool:
+    return "multipart/form-data" in (content_type or "").lower()
+
 
 @app.get("/healthz")
-async def healthz():
-    """Health check endpoint"""
-    # Check if model is loaded
-    model_loaded = _model_instance is not None
-    return JSONResponse({"status": "ok", "model_loaded": model_loaded})
+async def healthz() -> JSONResponse:
+    """Health check endpoint."""
+    return JSONResponse(
+        {
+            "status": "ok",
+            "enabled": ASR_ENABLED,
+            "configured_providers": ["faster-whisper", "whisperx"],
+            "loaded_providers": sorted(list(_providers.keys())),
+            "lazy_load_alignment": ASR_LAZY_LOAD_ALIGNMENT,
+        }
+    )
+
 
 @app.post("/align")
-async def align(request: AlignRequest):
-    """Align audio to text with word-level timing"""
+async def align(request: Request):
+    """Align audio to text with word-level timing."""
     try:
-        # Validate request
-        if not request.media_path and not request.media_file:
-            raise HTTPException(status_code=400, detail="Either media_path or media_file must be provided")
-        
-        # Handle file input
+        content_type = request.headers.get("content-type", "")
+        upload: UploadFile | None = None
+        payload_dict: dict[str, object] = {}
+
+        if _is_multipart(content_type):
+            form = await request.form()
+            upload_obj = form.get("media_file") or form.get("file")
+            if upload_obj is not None and hasattr(upload_obj, "read"):
+                upload = upload_obj
+            elif upload_obj is not None:
+                raise HTTPException(status_code=400, detail="multipart media_file/file must be an uploaded file")
+            payload_dict = {
+                "audio_path": form.get("audio_path"),
+                "media_path": form.get("media_path"),
+                "model": form.get("model"),
+                "model_override": form.get("model_override"),
+                "model_accuracy": form.get("model_accuracy"),
+                "return_word_timestamps": form.get("return_word_timestamps"),
+                "prefer_forced_alignment": form.get("prefer_forced_alignment"),
+                "language": form.get("language"),
+                "strict": form.get("strict"),
+            }
+        else:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=400, detail="JSON body must be an object")
+            payload_dict = payload
+
+        align_request = AlignRequest(**payload_dict)
+
+        if upload is None and not align_request.audio_path and not align_request.media_path:
+            raise HTTPException(
+                status_code=400,
+                detail="One of uploaded media_file/file, audio_path, or media_path must be provided",
+            )
+
         temp_file_path = None
         try:
-            if request.media_file:
-                # Handle uploaded file
+            if upload is not None:
+                logger.info("ASR /align using uploaded media_file payload")
                 temp_file_path = os.path.join("/tmp", f"asr_upload_{uuid.uuid4()}.tmp")
                 with open(temp_file_path, "wb") as buffer:
-                    content = await request.media_file.read()
-                    buffer.write(content)
+                    buffer.write(await upload.read())
                 file_path = temp_file_path
-            elif request.media_path:
-                # Handle file path
-                file_path = request.media_path
+            elif align_request.audio_path:
+                logger.warning("ASR /align using audio_path fallback (shared filesystem required)")
+                file_path = align_request.audio_path
+                if not os.path.exists(file_path):
+                    raise HTTPException(status_code=400, detail=f"Audio file not found: {file_path}")
+                if not os.path.isfile(file_path):
+                    raise HTTPException(status_code=400, detail=f"Audio path is not a file: {file_path}")
+            elif align_request.media_path:
+                logger.warning("ASR /align using media_path fallback (shared filesystem required)")
+                file_path = align_request.media_path
                 if not os.path.exists(file_path):
                     raise HTTPException(status_code=400, detail=f"Media file not found: {file_path}")
                 if not os.path.isfile(file_path):
                     raise HTTPException(status_code=400, detail=f"Media path is not a file: {file_path}")
             else:
                 raise HTTPException(status_code=400, detail="No media provided")
-            
-            # Process the audio file
+
+            prefer_forced_alignment = bool(align_request.prefer_forced_alignment)
+            return_word_timestamps = bool(align_request.return_word_timestamps)
+            use_alignment = bool(ASR_FORCE_ALIGNMENT and prefer_forced_alignment and return_word_timestamps)
+            provider_name = "whisperx" if use_alignment else ASR_DEFAULT_PROVIDER
+
             full_text, segments, words, forced_alignment_used = process_audio_file(
-                file_path, 
-                request.language
+                file_path,
+                align_request.language,
+                provider_name=provider_name,
+                use_alignment=use_alignment,
             )
-            
-            # Check if forced alignment was actually used (if strict mode is enabled)
-            degraded = False
-            degradation_reason = None
-            
-            if request.strict and not forced_alignment_used:
+
+            if (align_request.strict or prefer_forced_alignment) and not forced_alignment_used:
                 raise HTTPException(
-                    status_code=400, 
-                    detail="Forced alignment required but not available"
+                    status_code=400,
+                    detail="Forced alignment required but not available",
                 )
-            
-            # Build response
+
             response = AlignResponse(
                 text=full_text,
-                language=request.language or "en",
-                model=request.model_override or ASR_MODEL,
-                provider="faster-whisper",
+                language=align_request.language or "en",
+                model=align_request.model_override or align_request.model or ASR_MODEL,
+                provider=provider_name,
                 forced_alignment_used=forced_alignment_used,
-                degraded=degraded,
-                degradation_reason=degradation_reason,
+                degraded=False,
+                degradation_reason=None,
                 segments=segments,
-                words=words
+                words=words if return_word_timestamps else [],
             )
-            
             return response
-            
         finally:
-            # Clean up temporary file if it was created
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-        
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
-    except Exception as e:
-        logger.error(f"Error in align endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Error in align endpoint: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
 
 @app.get("/models")
-async def list_models():
-    """List available models"""
-    # Return the models that are configured
-    return JSONResponse({
-        "models": [ASR_MODEL, ASR_MODEL_ACCURACY],
-        "default": ASR_MODEL,
-        "accuracy_override": ASR_MODEL_ACCURACY
-    })
+async def list_models() -> JSONResponse:
+    """List available models."""
+    return JSONResponse(
+        {
+            "models": [ASR_MODEL, ASR_MODEL_ACCURACY, ASR_ENGLISH_THROUGHPUT_MODEL],
+            "default": ASR_MODEL,
+            "accuracy_override": ASR_MODEL_ACCURACY,
+            "english_throughput": ASR_ENGLISH_THROUGHPUT_MODEL,
+        }
+    )
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=ASR_PORT)

@@ -281,6 +281,55 @@ docker compose --profile asr up -d
 docker compose --profile asr down
 ```
 
+### Router Alignment API
+
+When router is deployed, the public alignment route is:
+- `POST /v1/audio/align` on router host (`:4000`)
+
+Router behavior:
+- Requires `multipart/form-data` uploads (`media_file` plus form fields)
+- Rejects path-only/JSON alignment RPCs with `cross_host_alignment_requires_multipart_upload`
+- Forwards uploaded media bytes upstream to ASR `/align` via `ASR_BASE_URL`
+- Requires `python-multipart` in the router image to parse multipart form bodies
+
+#### Router Alignment Smoke Check
+
+```bash
+curl -sS http://127.0.0.1:4000/v1/audio/align \
+  -F "media_file=@/path/to/_audio.wav" \
+  -F "model=whisper-large-v3-turbo" \
+  -F "model_accuracy=whisper-large-v3" \
+  -F "return_word_timestamps=true" \
+  -F "prefer_forced_alignment=true" | jq .
+```
+
+Equivalent minimal multipart request:
+
+```bash
+curl -F "media_file=@/path/to/audio.wav" \
+  -F "model=whisper-large-v3-turbo" \
+  -F "return_word_timestamps=true" \
+  -F "prefer_forced_alignment=true" \
+  http://127.0.0.1:4000/v1/audio/align
+```
+
+`BASE_URL=http://ask:4000` remains the standard app-to-router configuration. Do not assume
+shared filesystem paths across app/router/ASR containers.
+
+#### ASR Healthcheck
+
+```bash
+curl -sS http://127.0.0.1:8000/healthz | jq .
+```
+
+#### Alignment Troubleshooting
+
+If router logs show:
+
+`The python-multipart library must be installed to use form parsing.`
+
+the router image is missing multipart parser support. Rebuild the router after installing router dependencies (which now include `python-multipart`) and redeploy the router container.
+
 ### ASR Service API
 
 The ASR service exposes a `/align` endpoint that accepts audio files and returns:
@@ -357,6 +406,7 @@ curl -X POST http://localhost:8000/align \
 - It can run on the same host but uses its own resources and model loading
 - The service will automatically pull required models when started
 - Word-level timing is only available when forced alignment is enabled
+- `whisperx==3.1.1` on PyPI is a yanked third-party release; in this stack it can pull in `pyannote.audio` code paths that still reference removed `torchaudio` backend selector APIs. The ASR WhisperX provider now installs a runtime compatibility shim for missing `torchaudio.set_audio_backend/get_audio_backend` so `/align` forced-alignment requests remain operational on newer torchaudio builds.
 
 ## On-Demand Model Auto-Pull
 

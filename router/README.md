@@ -28,6 +28,9 @@ The router is configured through `model_policy.yml` which defines:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | URL of the Ollama service |
+| `ASR_BASE_URL` | empty | Optional explicit ASR/alignment upstream override (`http://host:port`) |
+| `ASR_PORT` | `8000` | Fallback ASR port used when `ASR_BASE_URL` is not set |
+| `ASR_SCHEME` | `http` | Fallback ASR scheme used when `ASR_BASE_URL` is not set |
 | `MODEL_POLICY_FILE` | `/app/model_policy.yml` | Path to the model policy configuration |
 | `MODEL_DEFAULT` | `qwen3.6:35b-a3b` | Default model to use |
 | `KEEP_ALIVE_DEFAULT` | `-1` | Default keep_alive value |
@@ -134,21 +137,47 @@ The ASR service is designed to work independently of the Ollama two-warm model p
 The router exposes native alignment endpoints that forward to the ASR service while preserving the rich alignment response contract:
 
 - `/align` - Native alignment endpoint
-- `/v1/audio/align` - Namespaced OpenAI-compatible alignment endpoint
+- `/v1/audio/align` - Namespaced alignment endpoint
 
-These endpoints accept the same request format as the ASR service's `/align` endpoint and return the full alignment response with:
+Upstream wiring:
+- If `ASR_BASE_URL` is set, router forwards multipart uploads to `POST ${ASR_BASE_URL}/align`
+- If `ASR_BASE_URL` is unset, router infers upstream as `${ASR_SCHEME}://<ollama-host-from-OLLAMA_BASE_URL>:${ASR_PORT}` and forwards multipart uploads to `/align`
+- Multipart uploads require `python-multipart` in the router image
+- Path-only JSON payloads (for example `audio_path`/`media_path`) are rejected with `cross_host_alignment_requires_multipart_upload`
+
+These endpoints return the full alignment response with:
 
 - Transcript segments with timing information
 - Word-level timestamps
 - Metadata about the model used and alignment status
 
-Example request:
+Example request through the router (multipart upload):
 
 ```bash
-curl -X POST http://localhost:4000/align \
-  -F "media_file=@/path/to/audio.wav" \
-  -H "Content-Type: multipart/form-data"
+curl -sS http://127.0.0.1:4000/v1/audio/align \
+  -F "media_file=@/path/to/_audio.wav" \
+  -F "model=whisper-large-v3-turbo" \
+  -F "model_accuracy=whisper-large-v3" \
+  -F "return_word_timestamps=true" \
+  -F "prefer_forced_alignment=true" | jq .
 ```
+
+Minimal contract example:
+
+```bash
+curl -F "media_file=@/path/to/audio.wav" \
+  -F "model=whisper-large-v3-turbo" \
+  -F "return_word_timestamps=true" \
+  -F "prefer_forced_alignment=true" \
+  http://127.0.0.1:4000/v1/audio/align
+```
+
+In split-host deployments, multipart upload is the required contract (`media_file` plus alignment/model fields); do not rely on shared path visibility between containers.
+
+Troubleshooting:
+
+- Error: `The python-multipart library must be installed to use form parsing.`
+- Fix: ensure router dependencies include `python-multipart`, rebuild router image, then restart the router container.
 
 Example response:
 
