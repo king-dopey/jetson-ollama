@@ -1,31 +1,27 @@
-# Default local policy kept aligned with PROFILE=orin.
-# Runtime profile selection is handled by compose bind-mounting
-# profiles/${PROFILE:-orin}/models.yaml to /app/model_policy.yml.
-
 models:
-  - model: qwen3-coder:30b
+  - model: qwen3-coder-next:q4_K_M
     keep_alive: -1
     think: false
     warmup: true
     options:
-      num_ctx: 65536
+      num_ctx: 262144
       num_batch: 512
-      temperature: 0.1
-      top_p: 0.9
+      temperature: 0.15
+      top_p: 0.95
       repeat_penalty: 1.05
 
-  - model: qwen3.6:35b-a3b
-    keep_alive: 10m
+  - model: qwen3.6:35b-a3b-q8_0
+    keep_alive: -1
     think: true
-    warmup: false
+    warmup: true
     options:
-      num_ctx: 32768
+      num_ctx: 262144
       num_batch: 512
       temperature: 0.6
       top_p: 0.95
 
   - model: qwen3:4b
-    keep_alive: 10m
+    keep_alive: 30m
     think: true
     warmup: false
     options:
@@ -36,23 +32,33 @@ models:
       repeat_penalty: 1.05
 
   - model: qwen3-vl:4b
-    keep_alive: 10m
+    keep_alive: 30m
     think: true
     warmup: false
     options:
-      num_ctx: 32768
+      num_ctx: 65536
       num_batch: 256
       temperature: 0.2
       top_p: 0.9
       repeat_penalty: 1.05
 
   - model: gemma4:12b
-    keep_alive: 10m
+    keep_alive: 30m
     think: true
     warmup: false
     options:
-      num_ctx: 32768
+      num_ctx: 65536
       num_batch: 256
       temperature: 0.3
       top_p: 0.95
       repeat_penalty: 1.05
+
+  - model: reader-lm:1.5b
+    keep_alive: 30m
+    think: false
+    warmup: false
+    options:
+      num_ctx: 65536
+      num_batch: 256
+      temperature: 0.0
+      top_p: 0.9

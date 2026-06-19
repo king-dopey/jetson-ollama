@@ -1,11 +1,19 @@
-# Jetson AGX Orin LLM Serving Node (Ollama + Optional OpenAI Router)
+# Jetson AGX Orin + Thor Shared LLM Serving Stack (Ollama + Optional OpenAI Router)
 
-This repository provides an Ollama LLM serving node for a Jetson AGX Orin. It is designed to be used in front of the OpenAPI-compatible router in the separate `router/` subproject.
+This repository provides a single shared Ollama/router stack for both Jetson AGX Orin 64GB and Jetson AGX Thor 128GB.
+Board behavior is selected with `PROFILE=orin|thor` (default: `orin`), without splitting compose architecture.
+
+For the current board-profile runbook and validation gates, use `docs/UnifiedOrinThorProfiles.md` as the canonical operator guide.
 
 ## Files
 
 - `docker-compose.yml`: Ollama service plus optional `proxy` profile that launches a bundled router instance for convenience.
 - `.env.example`: environment values for ports and model behavior.
+- `profiles/orin/models.yaml`: Orin model/residency policy.
+- `profiles/thor/models.yaml`: Thor model/residency policy.
+- `profiles/orin/librechat-modelspecs.yaml`: Orin LibreChat `Coding`/`Chat` mapping.
+- `profiles/thor/librechat-modelspecs.yaml`: Thor LibreChat `Coding`/`Chat` mapping.
+- `docs/UnifiedOrinThorProfiles.md`: profile runbook and validation gates.
 
 ## Network and Security Notes
 
@@ -20,11 +28,17 @@ This repository provides an Ollama LLM serving node for a Jetson AGX Orin. It is
 ```bash
 cp .env.example .env
 
+PROFILE=orin docker compose up -d
+# Orin default also applies if PROFILE is unset:
 docker compose up -d
+# Thor:
+PROFILE=thor docker compose up -d
+
 # Optional OpenAI-compatible single endpoint for LibreChat:
-docker compose --profile proxy up -d --build
+PROFILE=orin docker compose -f router/docker-compose.yml --profile proxy up -d --build
+PROFILE=thor docker compose -f router/docker-compose.yml --profile proxy up -d --build
 # Optional verifier pull helper:
-docker compose --profile verifier up ollama-pull-verifier
+PROFILE=orin docker compose --profile verifier up ollama-pull-verifier
 # Optional ASR service:
 docker compose --profile asr up -d
 ```

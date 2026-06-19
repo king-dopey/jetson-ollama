@@ -1,9 +1,11 @@
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.10
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia
+    env_file:
+      - ./profiles/${PROFILE:-orin}/stack.env
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
@@ -26,35 +28,40 @@ services:
       start_period: 30s
 
   ollama-warmup:
-    image: curlimages/curl:latest
+    image: curlimages/curl:8.14.1
     container_name: ollama-warmup
     restart: "no"
     depends_on:
       ollama:
         condition: service_healthy
+    env_file:
+      - ./profiles/${PROFILE:-orin}/stack.env
     environment:
       OLLAMA_URL: http://ollama:11434
-      WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768}
-      WARMUP_DEFAULT_NUM_CTX: ${WARMUP_DEFAULT_NUM_CTX:-16384}
       KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       PULL_MAX_RETRIES: ${PULL_MAX_RETRIES:-3}
       PULL_BACKOFF_SEC: ${PULL_BACKOFF_SEC:-10}
+      ACTIVE_PROFILE: ${PROFILE:-orin}
     volumes:
       - ./scripts:/scripts:ro
+      - ./profiles/${PROFILE:-orin}/models.yaml:/profiles/models.yaml:ro
+      - ./profiles/${PROFILE:-orin}/librechat-modelspecs.yaml:/profiles/librechat-modelspecs.yaml:ro
     command: ["/bin/sh", "/scripts/warmup.sh"]
 
   ollama-pull-verifier:
     profiles: ["verifier"]
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.10
     container_name: ollama-pull-verifier
     restart: "no"
     depends_on:
       ollama:
         condition: service_healthy
+    env_file:
+      - ./profiles/${PROFILE:-orin}/stack.env
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
-    command: ["ollama pull nemotron-cascade-2:30b"]
+    command: ["ollama pull \"$$MODEL_VERIFY_TAG\""]
 
   asr:
     profiles: ["asr"]

@@ -7,17 +7,20 @@ services:
     image: local/ollama-openai-router:0.1.0
     container_name: ollama-openai-router
     restart: unless-stopped
+    env_file:
+      - ../profiles/${PROFILE:-orin}/stack.env
     environment:
       ROUTER_HOST: ${ROUTER_HOST}
       ROUTER_PORT: 4000
       OLLAMA_BASE_URL: ${OLLAMA_HOST}
       MODEL_POLICY_FILE: /app/model_policy.yml
-      MODEL_DEFAULT: ${MODEL_DEFAULT:-qwen3.6:35b-a3b}
       KEEP_ALIVE_DEFAULT: ${KEEP_ALIVE_DEFAULT:--1}
       AUTO_PULL_MISSING_MODELS: ${AUTO_PULL_MISSING_MODELS:-false}
       MODEL_PULL_TIMEOUT_SEC: ${MODEL_PULL_TIMEOUT_SEC:-7200}
       MODEL_PULL_MAX_RETRIES: ${MODEL_PULL_MAX_RETRIES:-2}
       MODEL_PULL_BACKOFF_SEC: ${MODEL_PULL_BACKOFF_SEC:-5}
+    volumes:
+      - ../profiles/${PROFILE:-orin}/models.yaml:/app/model_policy.yml:ro
     ports:
       - "${ROUTER_HOST:-0.0.0.0}:${ROUTER_PORT:-4000}:4000"
     healthcheck:

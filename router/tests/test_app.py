@@ -178,23 +178,16 @@ class RouterPayloadTests(unittest.TestCase):
         self.assertTrue(coder["warmup"])
 
         thinker = MODEL_POLICY["qwen3.6:35b-a3b"]
-        self.assertEqual(thinker["keep_alive"], 0)
+        self.assertEqual(thinker["keep_alive"], "10m")
         self.assertEqual(thinker["think"], True)
         self.assertEqual(thinker["options"]["num_ctx"], 32768)
         self.assertEqual(thinker["warmup"], False)
 
-        verifier = MODEL_POLICY["nemotron-cascade-2:30b"]
-        self.assertEqual(verifier["keep_alive"], "10m")
-        self.assertEqual(verifier["think"], True)
-        self.assertEqual(verifier["options"]["num_ctx"], 16384)
-        self.assertEqual(verifier["warmup"], False)
-
-        # Test new model
-        next_model = MODEL_POLICY["qwen3-coder-next:q4_K_M"]
-        self.assertEqual(next_model["keep_alive"], 0)
-        self.assertEqual(next_model["think"], False)
-        self.assertEqual(next_model["options"]["num_ctx"], 16384)
-        self.assertEqual(next_model["warmup"], False)
+        chat_small = MODEL_POLICY["qwen3:4b"]
+        self.assertEqual(chat_small["keep_alive"], "10m")
+        self.assertEqual(chat_small["think"], True)
+        self.assertEqual(chat_small["options"]["num_ctx"], 65536)
+        self.assertEqual(chat_small["warmup"], False)
 
 
 

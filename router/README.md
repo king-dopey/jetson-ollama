@@ -23,6 +23,10 @@ The router is configured through `model_policy.yml` which defines:
 - Context length (`num_ctx`) and other model options
 - Whether to warm up models at startup
 
+In compose deployments, `/app/model_policy.yml` is provided by profile bind mount:
+- `PROFILE=orin` -> `profiles/orin/models.yaml`
+- `PROFILE=thor` -> `profiles/thor/models.yaml`
+
 ## Environment Variables
 
 | Variable | Default | Description |
