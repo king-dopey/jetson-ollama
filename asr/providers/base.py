@@ -9,8 +9,14 @@ class ASRProvider(ABC):
     """Abstract base class for ASR providers"""
     
     @abstractmethod
-    def transcribe(self, file_path: str, language: Optional[str] = None, 
-                   use_alignment: bool = False) -> Tuple[str, List[dict], List[dict]]:
+    def transcribe(
+        self,
+        file_path: str,
+        language: Optional[str] = None,
+        use_alignment: bool = False,
+        model_name: Optional[str] = None,
+        accuracy_model_name: Optional[str] = None,
+    ) -> Tuple[str, List[dict], List[dict]]:
         """
         Transcribe audio file and return text, segments, and words
         
@@ -18,6 +24,8 @@ class ASRProvider(ABC):
             file_path: Path to audio file
             language: Language code (e.g., 'en', 'es')
             use_alignment: Whether to include word-level alignment
+            model_name: Optional transcription model override
+            accuracy_model_name: Optional accuracy model override
             
         Returns:
             Tuple of (text, segments, words)
@@ -40,6 +48,11 @@ class ProviderConfig(BaseModel):
     model: str
     accuracy_model: str
     compute_type: str
+    device: str = "auto"
+    resolved_device: Optional[str] = None
+    resolved_compute_type: Optional[str] = None
+    degraded: bool = False
+    degradation_reason: Optional[str] = None
     force_alignment: bool
     diarization_enabled: bool
     lazy_load_alignment: bool

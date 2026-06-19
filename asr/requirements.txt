@@ -1,14 +1,18 @@
-fastapi==0.137.1
+fastapi==0.137.2
 httpx==0.28.1
 uvicorn==0.49.0
-openai==2.41.1
-torch==2.11.0
-torchaudio==2.11.0
-transformers==5.12.1
+openai==2.43.0
+transformers==4.57.6
 faster-whisper==1.2.1
-# Note: 3.1.1 is yanked on PyPI (third-party release); provider contains runtime
-# torchaudio backend API compatibility shims for this Jetson stack.
-whisperx==3.1.1
-numpy==2.4.6
+whisperx==3.8.6
+# WhisperX 3.8.6 requires huggingface-hub<1.0.0.
+huggingface-hub==0.36.2
+# Python 3.10 aarch64 wheels currently publish up to 4.6.2.
+# Keep in sync with faster-whisper (<5,>=4.0) and whisperx (>=4.5.0).
+ctranslate2==4.6.2
+pyannote-audio==4.0.4
+# NumPy 2.3+ requires Python >=3.11; ASR image is Python 3.10 for Jetson cp310 torch wheels.
+numpy==2.2.6
+soundfile==0.14.0
 pydantic==2.13.4
-python-multipart==0.0.9
+python-multipart==0.0.32

@@ -7,9 +7,11 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from cache_config import initialize_cache_environment
 from providers.base import ASRProvider, ProviderConfig
 from providers.faster_whisper_provider import FasterWhisperProvider
 from providers.whisperx_provider import WhisperXProvider
+from runtime_config import RuntimeResolutionError, resolve_runtime
 
 
 logging.basicConfig(level=logging.INFO)
@@ -22,16 +24,37 @@ ASR_MODEL = os.getenv("ASR_MODEL", "whisper-large-v3-turbo")
 ASR_MODEL_ACCURACY = os.getenv("ASR_MODEL_ACCURACY", "whisper-large-v3")
 ASR_ENGLISH_THROUGHPUT_MODEL = os.getenv("ASR_ENGLISH_THROUGHPUT_MODEL", "distil-large-v3.5-ct2")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
+ASR_DEVICE = os.getenv("ASR_DEVICE", "auto")
 ASR_FORCE_ALIGNMENT = os.getenv("ASR_FORCE_ALIGNMENT", "1").lower() == "1"
 ASR_DIARIZATION_ENABLED = os.getenv("ASR_DIARIZATION_ENABLED", "0").lower() == "1"
 ASR_LAZY_LOAD_ALIGNMENT = os.getenv("ASR_LAZY_LOAD_ALIGNMENT", "1").lower() == "1"
 ASR_KEEP_WARM = os.getenv("ASR_KEEP_WARM", "0").lower() == "1"
-ASR_MODEL_CACHE = os.getenv("ASR_MODEL_CACHE", "/app/models")
 ASR_LOG_LEVEL = os.getenv("ASR_LOG_LEVEL", "info")
 
 logger.setLevel(getattr(logging, ASR_LOG_LEVEL.upper()))
+CACHE_PATHS = initialize_cache_environment(logger)
+ASR_MODEL_CACHE = CACHE_PATHS.model_cache
 
-_providers: dict[str, ASRProvider] = {}
+try:
+    ASR_RUNTIME = resolve_runtime()
+except RuntimeResolutionError as exc:
+    logger.error("ASR runtime validation failed: %s", exc)
+    raise
+
+logger.info(
+    "ASR runtime resolved: requested_device=%s requested_compute=%s resolved_device=%s "
+    "resolved_compute=%s cuda_available=%s degraded=%s degradation_reason=%s",
+    ASR_RUNTIME.requested_device,
+    ASR_RUNTIME.requested_compute_type,
+    ASR_RUNTIME.resolved_device,
+    ASR_RUNTIME.resolved_compute_type,
+    ASR_RUNTIME.cuda_available,
+    ASR_RUNTIME.degraded,
+    ASR_RUNTIME.degradation_reason,
+)
+logger.info("ASR runtime diagnostics: %s", ASR_RUNTIME.diagnostics)
+
+_providers: dict[tuple[str, str, str], ASRProvider] = {}
 
 
 class AlignRequest(BaseModel):
@@ -78,29 +101,42 @@ app = FastAPI(
 )
 
 
-def get_provider(provider_name: str) -> ASRProvider:
+def get_provider(
+    provider_name: str,
+    model_name: Optional[str] = None,
+    accuracy_model_name: Optional[str] = None,
+) -> ASRProvider:
     """Get or create ASR provider instance."""
     global _providers
 
-    if provider_name not in _providers:
+    resolved_model_name = model_name or ASR_MODEL
+    resolved_accuracy_model_name = accuracy_model_name or ASR_MODEL_ACCURACY
+    provider_key = (provider_name, resolved_model_name, resolved_accuracy_model_name)
+
+    if provider_key not in _providers:
         config = ProviderConfig(
             name=provider_name,
-            model=ASR_MODEL,
-            accuracy_model=ASR_MODEL_ACCURACY,
+            model=resolved_model_name,
+            accuracy_model=resolved_accuracy_model_name,
             compute_type=ASR_COMPUTE_TYPE,
+            device=ASR_DEVICE,
+            resolved_device=ASR_RUNTIME.resolved_device,
+            resolved_compute_type=ASR_RUNTIME.resolved_compute_type,
+            degraded=ASR_RUNTIME.degraded,
+            degradation_reason=ASR_RUNTIME.degradation_reason,
             force_alignment=ASR_FORCE_ALIGNMENT,
             diarization_enabled=ASR_DIARIZATION_ENABLED,
             lazy_load_alignment=ASR_LAZY_LOAD_ALIGNMENT,
         )
 
         if provider_name == "faster-whisper":
-            _providers[provider_name] = FasterWhisperProvider(config)
+            _providers[provider_key] = FasterWhisperProvider(config)
         elif provider_name == "whisperx":
-            _providers[provider_name] = WhisperXProvider(config)
+            _providers[provider_key] = WhisperXProvider(config)
         else:
             raise ValueError(f"Unknown provider: {provider_name}")
 
-    return _providers[provider_name]
+    return _providers[provider_key]
 
 
 def process_audio_file(
@@ -108,14 +144,18 @@ def process_audio_file(
     language: Optional[str] = None,
     provider_name: str = "faster-whisper",
     use_alignment: bool = False,
+    model_name: Optional[str] = None,
+    accuracy_model_name: Optional[str] = None,
 ) -> tuple[str, list[dict], list[dict], bool]:
     """Process audio file and return transcription with timing information."""
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(provider_name, model_name=model_name, accuracy_model_name=accuracy_model_name)
         full_text, segments_list, words_list = provider.transcribe(
             file_path,
             language=language,
             use_alignment=use_alignment,
+            model_name=model_name,
+            accuracy_model_name=accuracy_model_name,
         )
         forced_alignment_used = use_alignment and len(words_list) > 0
         return full_text, segments_list, words_list, forced_alignment_used
@@ -132,13 +172,15 @@ def _is_multipart(content_type: str) -> bool:
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
     """Health check endpoint."""
+    loaded_provider_names = sorted(list({provider_name for provider_name, _, _ in _providers.keys()}))
     return JSONResponse(
         {
             "status": "ok",
             "enabled": ASR_ENABLED,
             "configured_providers": ["faster-whisper", "whisperx"],
-            "loaded_providers": sorted(list(_providers.keys())),
+            "loaded_providers": loaded_provider_names,
             "lazy_load_alignment": ASR_LAZY_LOAD_ALIGNMENT,
+            "runtime": ASR_RUNTIME.health_payload(),
         }
     )
 
@@ -212,12 +254,16 @@ async def align(request: Request):
             return_word_timestamps = bool(align_request.return_word_timestamps)
             use_alignment = bool(ASR_FORCE_ALIGNMENT and prefer_forced_alignment and return_word_timestamps)
             provider_name = "whisperx" if use_alignment else ASR_DEFAULT_PROVIDER
+            requested_model_name = align_request.model_override or align_request.model or ASR_MODEL
+            requested_accuracy_model_name = align_request.model_accuracy or ASR_MODEL_ACCURACY
 
             full_text, segments, words, forced_alignment_used = process_audio_file(
                 file_path,
                 align_request.language,
                 provider_name=provider_name,
                 use_alignment=use_alignment,
+                model_name=requested_model_name,
+                accuracy_model_name=requested_accuracy_model_name,
             )
 
             if (align_request.strict or prefer_forced_alignment) and not forced_alignment_used:
@@ -229,7 +275,7 @@ async def align(request: Request):
             response = AlignResponse(
                 text=full_text,
                 language=align_request.language or "en",
-                model=align_request.model_override or align_request.model or ASR_MODEL,
+                model=requested_model_name,
                 provider=provider_name,
                 forced_alignment_used=forced_alignment_used,
                 degraded=False,

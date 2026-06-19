@@ -1,4 +1,8 @@
-FROM python:3.11.9-slim-bookworm
+FROM python:3.10.14-slim-bookworm
+
+ARG ASR_TORCH_INDEX_URL=https://pypi.jetson-ai-lab.io/jp6/cu126
+ARG ASR_TORCH_VERSION=2.8.0
+ARG ASR_TORCHAUDIO_VERSION=2.8.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,6 +22,12 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 COPY requirements.txt ./
+# Do not import CUDA-linked torch at build time: CUDA runtime libs are provided by
+# the NVIDIA container runtime when the container runs on the Jetson host.
+RUN pip install --no-cache-dir \
+    --index-url "${ASR_TORCH_INDEX_URL}" \
+    "torch==${ASR_TORCH_VERSION}" \
+    "torchaudio==${ASR_TORCHAUDIO_VERSION}"
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application source

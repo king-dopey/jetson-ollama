@@ -9,8 +9,8 @@ done
 
 echo "Ollama is ready. Starting ASR service..."
 
-# Create model cache directory if it doesn't exist
-mkdir -p "$ASR_MODEL_CACHE"
+# Keep cache default explicit; ASR startup performs writable validation.
+export ASR_MODEL_CACHE="${ASR_MODEL_CACHE:-/app/models}"
 
 # Start the ASR service
 exec "$@"

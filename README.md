@@ -268,6 +268,8 @@ An optional ASR (Automatic Speech Recognition) + word alignment service is avail
 - Is designed for on-demand transcription with exact word timing
 - Uses the `whisper-large-v3-turbo` model by default
 - Supports optional accuracy override with `whisper-large-v3`
+- Targets GPU-backed inference on Jetson Orin by default (`ASR_EXPECT_DEVICE=cuda`, `ASR_COMPUTE_TYPE=float16`)
+- Treats `whisper-large-v3-turbo` / `whisper-large-v3` as the stable public API names and normalizes them internally for provider-specific loading
 - Provides word-level timestamps via forced alignment when available
 - Is isolated from the two-warm Ollama model plan
 
@@ -395,18 +397,120 @@ curl -X POST http://localhost:8000/align \
 | `ASR_MODEL` | `whisper-large-v3-turbo` | Default transcription model |
 | `ASR_MODEL_ACCURACY` | `whisper-large-v3` | Optional accuracy override model |
 | `ASR_COMPUTE_TYPE` | `float16` | Compute type for model inference |
+| `ASR_DEVICE` | `auto` | Runtime device request (`auto`, `cuda`, `cpu`) |
+| `ASR_EXPECT_DEVICE` | `cuda` | Expected backend for startup validation (`cuda` fails fast if unavailable) |
+| `ASR_ALLOW_DEGRADED_BACKEND` | `0` | Permit startup on CPU when expected CUDA backend is unavailable |
+| `ASR_ALLOW_COMPUTE_FALLBACK` | `0` | Permit compute fallback (e.g., `float16` -> `float32` on CPU) |
 | `ASR_FORCE_ALIGNMENT` | `1` | Force word-level alignment |
 | `ASR_KEEP_WARM` | `0` | Keep ASR service warm |
-| `ASR_MODEL_CACHE` | `./asr/models` | Model cache directory |
+| `ASR_MODEL_CACHE` | `/app/models` | Canonical ASR model cache root |
+| `HF_HOME` | `/app/models/hf` | Hugging Face home under the ASR cache root |
+| `HUGGINGFACE_HUB_CACHE` | `/app/models/hf/hub` | huggingface_hub cache location |
+| `TRANSFORMERS_CACHE` | `/app/models/hf/transformers` | Transformers cache location |
+| `XDG_CACHE_HOME` | `/app/models/xdg` | XDG cache root used by dependent tooling |
 | `ASR_LOG_LEVEL` | `info` | Log level for the service |
+
+Build-time ASR image args (used by `docker compose --profile asr build`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ASR_TORCH_INDEX_URL` | `https://pypi.jetson-ai-lab.io/jp6/cu126` | Jetson wheel index for torch/torchaudio (JetPack 6 + CUDA 12.6) |
+| `ASR_TORCH_VERSION` | `2.8.0` | Torch version pinned for WhisperX compatibility |
+| `ASR_TORCHAUDIO_VERSION` | `2.8.0` | Torchaudio version pinned for WhisperX compatibility |
+
+Public model contract:
+- Callers should keep using `whisper-large-v3-turbo` (default) and `whisper-large-v3` (accuracy override) in `/align` requests and env configuration.
+- The ASR service may normalize these to provider-native names (for example `large-v3-turbo` / `large-v3`) internally before loading WhisperX models.
 
 ### Notes
 
 - The ASR service is completely separate from the Ollama two-warm model plan
 - It can run on the same host but uses its own resources and model loading
 - The service will automatically pull required models when started
+- `asr-service` now runs with NVIDIA runtime settings in compose (`runtime: nvidia`, `NVIDIA_VISIBLE_DEVICES=all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility`)
+- Compose mounts a named volume (`asr-model-cache`) at `/app/models` so cache survives restarts without host bind-mount ownership drift
+- ASR startup validates all cache directories and fails fast with `asr_model_cache_not_writable` if the runtime user cannot write them
+- ASR startup also validates backend/compute compatibility and reports resolved runtime diagnostics in `/healthz` (`resolved_device`, `resolved_compute_type`, CUDA visibility, torch/ctranslate2 details)
 - Word-level timing is only available when forced alignment is enabled
-- `whisperx==3.1.1` on PyPI is a yanked third-party release; in this stack it can pull in `pyannote.audio` code paths that still reference removed `torchaudio` backend selector APIs. The ASR WhisperX provider now installs a runtime compatibility shim for missing `torchaudio.set_audio_backend/get_audio_backend` so `/align` forced-alignment requests remain operational on newer torchaudio builds.
+- ASR now uses `whisperx==3.8.6` with its current alignment flow (`load_model` + `load_align_model` + `align`) and includes torchaudio backend compatibility shims when required by upstream dependencies.
+- Upstream compatibility constraints from WhisperX currently require `torch~=2.8.0`, `torchaudio~=2.8.0`, and `huggingface-hub<1.0.0`. The ASR container installs torch/torchaudio from the Jetson CUDA wheel index (`ASR_TORCH_INDEX_URL`).
+- JetPack 6 / CUDA 12.6 torch 2.8.0 wheels from `pypi.jetson-ai-lab.io/jp6/cu126` are currently `cp310`; the ASR image uses Python 3.10 to match wheel ABI and avoid incompatible fallback installs.
+- ASR dependency caps in `asr/requirements.txt` are ABI-driven: `numpy==2.2.6` (NumPy 2.3+ requires Python >=3.11) and `ctranslate2==4.6.2` (latest wheel available for Python 3.10 on Linux aarch64). These remain compatible with `whisperx==3.8.6` and `faster-whisper==1.2.1`.
+- Build-time `import torch` is intentionally avoided in this image: CUDA-linked Jetson torch may fail to import during `docker build` with missing `libcudart`/`libcublas` because NVIDIA runtime libraries are mounted when the container runs on Orin, not guaranteed during image build.
+
+### ASR Cache Troubleshooting
+
+If ASR logs show:
+
+```text
+Permission denied: '/app/models/...'
+```
+
+check the ASR cache mount and writability first:
+
+```bash
+docker compose --profile asr exec asr-service sh -lc 'id && ls -ld /app/models && touch /app/models/.rw_probe && rm -f /app/models/.rw_probe'
+docker volume inspect model64_asr-model-cache
+```
+
+`asr-service` runs as a non-root `app` user. The cache directory must be writable by that user. The default compose setup uses a named Docker volume for `/app/models`, which avoids host bind-mount ownership mismatches.
+
+### ASR Backend Troubleshooting (`float16` failure)
+
+If you see:
+
+`Requested float16 compute type, but the target device or backend do not support efficient float16 computation.`
+
+the runtime resolved to CPU while `float16` was requested. Check:
+
+```bash
+docker compose --profile asr exec asr-service python - <<'PY'
+import json, urllib.request
+print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz'))['runtime'], indent=2))
+PY
+```
+
+and then verify GPU visibility and wheel selection:
+
+```bash
+docker compose --profile asr exec asr-service python - <<'PY'
+import torch, ctranslate2
+print('torch=', torch.__version__)
+print('torch_cuda=', torch.version.cuda)
+print('cuda_available=', torch.cuda.is_available())
+print('ctranslate2=', ctranslate2.__version__)
+PY
+```
+
+Build ASR with the Jetson wheel index explicitly:
+
+```bash
+docker compose --profile asr build \
+  --no-cache \
+  --build-arg ASR_TORCH_INDEX_URL=https://pypi.jetson-ai-lab.io/jp6/cu126 \
+  --build-arg ASR_TORCH_VERSION=2.8.0 \
+  --build-arg ASR_TORCHAUDIO_VERSION=2.8.0 \
+  asr
+```
+
+`pypi.jetson-ai-lab.dev` is no longer a valid host; use `pypi.jetson-ai-lab.io`.
+
+Post-build runtime smoke test (run on Jetson Orin with NVIDIA runtime):
+
+```bash
+docker compose --profile asr run --rm asr python -c "import torch; print('torch=', torch.__version__); print('torch_cuda=', torch.version.cuda); print('cuda_available=', torch.cuda.is_available())"
+```
+
+Expected on a healthy Orin deployment:
+- `resolved_device` is `cuda`
+- `resolved_compute_type` is `float16`
+- `torch` version is not `+cpu`
+
+If CUDA is intentionally unavailable, set both:
+- `ASR_ALLOW_DEGRADED_BACKEND=1`
+- `ASR_ALLOW_COMPUTE_FALLBACK=1`
+
+This enables explicit degraded CPU startup and will report `degradation_reason` in health diagnostics.
 
 ## On-Demand Model Auto-Pull
 

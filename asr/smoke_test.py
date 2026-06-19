@@ -71,9 +71,17 @@ def test_env_vars():
         "ASR_MODEL",
         "ASR_MODEL_ACCURACY",
         "ASR_COMPUTE_TYPE",
+        "ASR_DEVICE",
+        "ASR_EXPECT_DEVICE",
+        "ASR_ALLOW_DEGRADED_BACKEND",
+        "ASR_ALLOW_COMPUTE_FALLBACK",
         "ASR_FORCE_ALIGNMENT",
         "ASR_KEEP_WARM",
         "ASR_MODEL_CACHE",
+        "HF_HOME",
+        "HUGGINGFACE_HUB_CACHE",
+        "TRANSFORMERS_CACHE",
+        "XDG_CACHE_HOME",
         "ASR_LOG_LEVEL"
     ]
     

@@ -1,0 +1,535 @@
+{
+    "project": "ask",
+    "compose_files": [
+      "/ask/docker-compose.yml,/ask/docker-compose.override.yml"
+    ],
+    "workdirs": [
+      "/ask"
+    ],
+    "services": [
+      {
+        "service": "reverse-proxy",
+        "name": "reverse-proxy",
+        "image": "nginx:latest",
+        "ports": {
+          "443/tcp": [
+            {
+              "HostIp": "50",
+              "HostPort": "443"
+            }
+          ],
+          "80/tcp": [
+            {
+              "HostIp": "50",
+              "HostPort": "80"
+            }
+          ]
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "reverse-proxy",
+              "reverse-proxy"
+            ],
+            "DNSNames": [
+              "reverse-proxy",
+              "49d1b7c287a1"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/etc/nginx/ssl/nginx.crt",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": false,
+            "Source": "/ask/proxy/ask.crt",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/etc/nginx/ssl/nginx.key",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": false,
+            "Source": "/ask/proxy/ask.key",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/etc/nginx/ssl/ca.crt",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": false,
+            "Source": "/ask/proxy/root_ca.crt",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/etc/nginx/nginx.conf",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": false,
+            "Source": "/ask/proxy/nginx.conf",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "firecrawl",
+        "name": "firecrawl",
+        "image": "ghcr.io/firecrawl/firecrawl:latest",
+        "ports": {
+          "8080/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "firecrawl",
+              "firecrawl"
+            ],
+            "DNSNames": [
+              "firecrawl",
+              "339ad7049343"
+            ],
+          }
+        },
+        "mounts": []
+      },
+      {
+        "service": "api",
+        "name": "LibreChat",
+        "image": "registry.librechat.ai/danny-avila/librechat-dev:latest",
+        "ports": {
+          "3080/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "LibreChat",
+              "api"
+            ],
+            "DNSNames": [
+              "LibreChat",
+              "api",
+              "3aeca6d54ecc"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/app/.env",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/ask/.env",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/client/public/images",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/images",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/uploads",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/uploads",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/logs",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/logs",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/librechat.yaml",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/ask/librechat.yaml",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/api/app/clients/tools/structured/OpenAIImageToolsWrapper.js",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/ask/OpenAIImageToolsWrapper.js",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "rag_api",
+        "name": "rag_api",
+        "image": "registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest",
+        "ports": {},
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "rag_api",
+              "rag_api"
+            ],
+            "DNSNames": [
+              "rag_api",
+              "c25142f28f74"
+            ],
+          }
+        },
+        "mounts": []
+      },
+      {
+        "service": "pockettts",
+        "name": "pocket-tts",
+        "image": "pockettts-openai-server:latest",
+        "ports": {
+          "49112/tcp": [
+            {
+              "HostIp": "50",
+              "HostPort": "49112"
+            }
+          ]
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "pocket-tts",
+              "pockettts"
+            ],
+            "DNSNames": [
+              "pocket-tts",
+              "pockettts",
+              "358eeebc1766"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/app/voices",
+            "Mode": "ro",
+            "Propagation": "rprivate",
+            "RW": false,
+            "Source": "/SharedData/pockettts/voices",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/app/logs",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/pockettts/logs",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/pockettts/.cache/huggingface",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/pockettts/cache",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "whisper-full",
+        "name": "whisper-full",
+        "image": "onerahmet/openai-whisper-asr-webservice:latest",
+        "ports": {
+          "9000/tcp": [
+            {
+              "HostIp": "50",
+              "HostPort": "9000"
+            }
+          ]
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "whisper-full",
+              "whisper-full"
+            ],
+            "DNSNames": [
+              "whisper-full",
+              "e5529cabcf45"
+            ],
+          }
+        },
+        "mounts": []
+      },
+      {
+        "service": "searxng",
+        "name": "searxng",
+        "image": "searxng/searxng:latest",
+        "ports": {
+          "8080/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "searxng",
+              "searxng"
+            ],
+            "DNSNames": [
+              "searxng",
+              "69daac8dbf7c"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/var/cache/searxng",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/searxng-cache",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/etc/searxng",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/ask/searxng",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "firecrawl-rabbitmq",
+        "name": "firecrawl-rabbitmq",
+        "image": "rabbitmq:3-management",
+        "ports": {
+          "15671/tcp": null,
+          "15672/tcp": null,
+          "15691/tcp": null,
+          "15692/tcp": null,
+          "25672/tcp": null,
+          "4369/tcp": null,
+          "5671/tcp": null,
+          "5672/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "firecrawl-rabbitmq",
+              "firecrawl-rabbitmq"
+            ],
+            "DNSNames": [
+              "firecrawl-rabbitmq",
+              "c742981dd639"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/var/lib/rabbitmq",
+            "Driver": "local",
+            "Mode": "",
+            "Name": "bc2af7a9ea8a23bcc0f9490883897880c1847b58e39be3f75f6bd126d9e2a3c4",
+            "Propagation": "",
+            "RW": true,
+            "Source": "/var/lib/docker/volumes/bc2af7a9ea8a23bcc0f9490883897880c1847b58e39be3f75f6bd126d9e2a3c4/_data",
+            "Type": "volume"
+          }
+        ]
+      },
+      {
+        "service": "firecrawl-postgres",
+        "name": "firecrawl-postgres",
+        "image": "ask-firecrawl-postgres:16-pgcron",
+        "ports": {
+          "5432/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "firecrawl-postgres",
+              "firecrawl-postgres"
+            ],
+            "DNSNames": [
+              "firecrawl-postgres",
+              "f9a080dff71c"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/var/lib/postgresql/data",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/firecrawl/postgres_data",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "local-reranker",
+        "name": "local-reranker",
+        "image": "dheaps/local-reranker:latest",
+        "ports": {
+          "8010/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "local-reranker",
+              "local-reranker"
+            ],
+            "DNSNames": [
+              "local-reranker",
+              "bf1affa1f58a"
+            ],
+          }
+        },
+        "mounts": []
+      },
+      {
+        "service": "vectordb",
+        "name": "vectordb",
+        "image": "pgvector/pgvector:0.8.0-pg15-trixie",
+        "ports": {
+          "5432/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "vectordb",
+              "vectordb"
+            ],
+            "DNSNames": [
+              "vectordb",
+              "89b87d7aacb4"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/var/lib/postgresql/data",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/pgdata2",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "meilisearch",
+        "name": "chat-meilisearch",
+        "image": "getmeili/meilisearch:v1.35.1",
+        "ports": {
+          "7700/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "chat-meilisearch",
+              "meilisearch"
+            ],
+            "DNSNames": [
+              "chat-meilisearch",
+              "meilisearch",
+              "3b53ea045a3e"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/meili_data",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/meili_data_v1.12",
+            "Type": "bind"
+          }
+        ]
+      },
+      {
+        "service": "firecrawl-playwright",
+        "name": "firecrawl-playwright",
+        "image": "ghcr.io/firecrawl/playwright-service:latest",
+        "ports": {},
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "firecrawl-playwright",
+              "firecrawl-playwright"
+            ],
+            "DNSNames": [
+              "firecrawl-playwright",
+              "e6e99e5cd5d0"
+            ],
+          }
+        },
+        "mounts": []
+      },
+      {
+        "service": "mongodb",
+        "name": "chat-mongodb",
+        "image": "mongo:8.0.20",
+        "ports": {
+          "27017/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "chat-mongodb",
+              "mongodb"
+            ],
+            "DNSNames": [
+              "chat-mongodb",
+              "mongodb",
+              "8987059a1ada"
+            ],
+          }
+        },
+        "mounts": [
+          {
+            "Destination": "/data/db",
+            "Mode": "rw",
+            "Propagation": "rprivate",
+            "RW": true,
+            "Source": "/SharedData/ask/data-node",
+            "Type": "bind"
+          },
+          {
+            "Destination": "/data/configdb",
+            "Driver": "local",
+            "Mode": "",
+            "Name": "595736b57e528cc1aebe83f7aa474edb9c6cd9a69a57ca4385ac117b16af879a",
+            "Propagation": "",
+            "RW": true,
+            "Source": "/var/lib/docker/volumes/595736b57e528cc1aebe83f7aa474edb9c6cd9a69a57ca4385ac117b16af879a/_data",
+            "Type": "volume"
+          }
+        ]
+      },
+      {
+        "service": "firecrawl-redis",
+        "name": "firecrawl-redis",
+        "image": "redis:alpine",
+        "ports": {
+          "6379/tcp": null
+        },
+        "networks": {
+          "ask_librechat-net": {
+            "Aliases": [
+              "firecrawl-redis",
+              "firecrawl-redis"
+            ],
+            "DNSNames": [
+              "firecrawl-redis",
+              "c1bc4eaf3be8"
+            ],
+          }
+        },
+        "mounts": []
+      }
+    ]
+  }

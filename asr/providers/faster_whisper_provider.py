@@ -5,7 +5,9 @@ import os
 import logging
 from typing import Optional, List, Tuple
 from faster_whisper import WhisperModel
+from cache_config import get_model_cache_dir
 from .base import ASRProvider, ProviderConfig
+from .model_names import normalize_public_model_alias
 
 logger = logging.getLogger("asr.faster_whisper")
 
@@ -14,28 +16,41 @@ class FasterWhisperProvider(ASRProvider):
     
     def __init__(self, config: ProviderConfig):
         self.config = config
-        self._model_instance = None
+        self._model_instances: dict[str, WhisperModel] = {}
         self._model_name = config.model
+        self._device = (
+            config.resolved_device
+            or ("cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu")
+        )
+        self._compute_type = config.resolved_compute_type or config.compute_type
         
-    def _load_model(self):
+    def _load_model(self, model_name: Optional[str] = None):
         """Load the ASR model once and cache it"""
-        if self._model_instance is None:
+        selected = model_name or self._model_name
+        resolved = normalize_public_model_alias(selected).normalized
+        if resolved not in self._model_instances:
             try:
-                logger.info(f"Loading ASR model: {self._model_name}")
-                self._model_instance = WhisperModel(
-                    self._model_name,
-                    device="cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu",
-                    compute_type=self.config.compute_type,
-                    download_root=os.getenv("ASR_MODEL_CACHE", "/app/models")
+                logger.info(f"Loading ASR model: {resolved}")
+                self._model_instances[resolved] = WhisperModel(
+                    resolved,
+                    device=self._device,
+                    compute_type=self._compute_type,
+                    download_root=get_model_cache_dir(),
                 )
                 logger.info("ASR model loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load ASR model: {e}")
                 raise
-        return self._model_instance
+        return self._model_instances[resolved]
     
-    def transcribe(self, file_path: str, language: Optional[str] = None, 
-                   use_alignment: bool = False) -> Tuple[str, List[dict], List[dict]]:
+    def transcribe(
+        self,
+        file_path: str,
+        language: Optional[str] = None,
+        use_alignment: bool = False,
+        model_name: Optional[str] = None,
+        accuracy_model_name: Optional[str] = None,
+    ) -> Tuple[str, List[dict], List[dict]]:
         """
         Transcribe audio file using faster-whisper
         
@@ -49,7 +64,8 @@ class FasterWhisperProvider(ASRProvider):
         """
         try:
             # Load model if not already loaded
-            model = self._load_model()
+            requested_model = accuracy_model_name if (use_alignment and accuracy_model_name) else model_name
+            model = self._load_model(requested_model)
             
             # Perform transcription with forced alignment if available
             segments, info = model.transcribe(
@@ -102,8 +118,11 @@ class FasterWhisperProvider(ASRProvider):
         return {
             "name": "faster-whisper",
             "model": self._model_name,
-            "compute_type": self.config.compute_type,
-            "force_alignment": self.config.force_alignment
+            "device": self._device,
+            "compute_type": self._compute_type,
+            "force_alignment": self.config.force_alignment,
+            "degraded": self.config.degraded,
+            "degradation_reason": self.config.degradation_reason,
         }
     
     def is_available(self) -> bool:
