@@ -35,8 +35,8 @@ run_selection() {
     local selected_file="${ARTIFACTS_DIR}/selected-stack.json"
     local selected_env="${ARTIFACTS_DIR}/selected-stack.env"
     
-    # Get the relative path from REPO_ROOT (full path inside container)
-    local artifacts_relative="${ARTIFACTS_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR (full path inside container)
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
     if [[ ! -f "$candidates_file" ]]; then
         error_exit "Candidate stacks not found. Run solve first."
@@ -52,6 +52,7 @@ run_selection() {
         -w /solver \
         asr-solver:latest \
         python3 /solver/python/solve.py \
+            --catalog "/solver/${artifacts_relative}/catalog.json" \
             --select-winner \
             --candidates "/solver/${artifacts_relative}/candidate-stacks.json" \
             --probe-results "/solver/${artifacts_relative}/probe-results.json" \
@@ -67,10 +68,11 @@ import json
 with open('$selected_file') as f:
     data = json.load(f)
 
-stack = data.get('stack', {})
+stack = data.get('stack') or {}
 print(f"# ASR Stack Selection")
 print(f"# Generated: $(date -Iseconds)")
 print()
+print(f"# No viable candidate found - all probes failed")
 print(f"export ASR_CUDA_FAMILY={stack.get('cuda_family', '')}")
 print(f"export ASR_TORCH_VERSION={stack.get('torch', '')}")
 print(f"export ASR_TORCHAUDIO_VERSION={stack.get('torchaudio', '')}")

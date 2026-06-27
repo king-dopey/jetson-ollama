@@ -1,0 +1,4 @@
+WARNING: pip index is currently an experimental command. It may be removed/changed in a future release without prior warning.
+torchaudio (2.11.0+cu128)
+Available versions: 2.11.0+cu128, 2.10.0+cu128, 2.9.1+cu128, 2.9.0+cu128, 2.8.0+cu128, 2.7.1+cu128, 2.7.0+cu128
+WARNING: Skipping /usr/lib/python3.12/dist-packages/charset_normalizer-3.3.2.dist-info due to invalid metadata entry 'name'

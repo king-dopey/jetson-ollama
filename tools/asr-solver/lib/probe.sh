@@ -20,7 +20,6 @@ source "${ASR_SOLVER_DIR}/lib/common.sh"
 # Use paths from run.sh environment
 LOGS_DIR="${ARTIFACTS_DIR}/logs"
 mkdir -p "$LOGS_DIR"
-VENV_DIR="${ASR_SOLVER_DIR}/.solver-venv"
 
 log_info "Starting probe phase..."
 log_info "Artifacts directory: $ARTIFACTS_DIR"
@@ -40,18 +39,22 @@ build_probe_images() {
         eval "image_name=\"\${CUDA_IMAGE_${family}}\""
         
         log_info "Building core probe image for $family..."
-        docker build \
+        if ! docker build \
             --build-arg BASE_IMAGE="$image_name" \
             -t "asr-probe-core-${family}" \
             -f "${ASR_SOLVER_DIR}/docker/Dockerfile.core-probe" \
-            "${ASR_SOLVER_DIR}" > /dev/null 2>&1 || true
+            "${ASR_SOLVER_DIR}" 2>&1; then
+            log_warn "Failed to build core probe image for $family"
+        fi
         
         log_info "Building full probe image for $family..."
-        docker build \
+        if ! docker build \
             --build-arg BASE_IMAGE="$image_name" \
             -t "asr-probe-full-${family}" \
             -f "${ASR_SOLVER_DIR}/docker/Dockerfile.full-probe" \
-            "${ASR_SOLVER_DIR}" > /dev/null 2>&1 || true
+            "${ASR_SOLVER_DIR}" 2>&1; then
+            log_warn "Failed to build full probe image for $family"
+        fi
     done
     
     log_info "Probe images built successfully"
@@ -93,48 +96,66 @@ probe_candidate() {
 EOF
     
     # Get PyTorch index URL
-    local pytorch_index
-    eval "pytorch_index=\"\${PYTORCH_INDEX_${cuda_family}}\""
+    local pytorch_index=""
+    if [[ -n "$cuda_family" ]]; then
+        eval "pytorch_index=\"\${PYTORCH_INDEX_${cuda_family}:-}\""
+    fi
     
-    # Run core probe
+    # Run core probe via Docker (redirect output to log file)
     log_info "Running core probe..."
-    "$VENV_DIR/bin/python" "${ASR_SOLVER_DIR}/container-scripts/core_probe.py" \
-        --cuda-family "$cuda_family" \
-        --ctranslate2 "$ctranslate2_version" \
-        --faster-whisper "$faster_whisper_version" \
-        --torch "$torch_version" \
-        --torchaudio "$torchaudio_version" \
-        --constraints "$constraints_file" \
-        --pytorch-index "$pytorch_index" \
-        --log-file "$log_file" \
-        --artifacts-dir "$ARTIFACTS_DIR"
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
-    local core_status=$?
-    
-    # Run full probe if core passed
-    local full_status=0
-    if [[ $core_status -eq 0 ]]; then
-        log_info "Running full probe..."
-        "$VENV_DIR/bin/python" "${ASR_SOLVER_DIR}/container-scripts/full_probe.py" \
+    if ! docker run --rm \
+        -v "${ASR_SOLVER_DIR}:/solver" \
+        -w /solver \
+        "asr-probe-core-${cuda_family}" \
+        python3 /solver/container-scripts/core_probe.py \
             --cuda-family "$cuda_family" \
             --ctranslate2 "$ctranslate2_version" \
             --faster-whisper "$faster_whisper_version" \
             --torch "$torch_version" \
             --torchaudio "$torchaudio_version" \
-            --whisperx "$whisperx_version" \
-            --constraints "$constraints_file" \
+            --constraints "/solver/${artifacts_relative}/constraints-rank${rank}.txt" \
             --pytorch-index "$pytorch_index" \
-            --log-file "$full_log_file" \
-            --artifacts-dir "$ARTIFACTS_DIR"
-        full_status=$?
+            --log-file "/solver/${artifacts_relative}/logs/core-rank${rank}.log" \
+            --artifacts-dir "/solver/${artifacts_relative}" > "${LOGS_DIR}/core-rank${rank}.log" 2>&1; then
+        log_warn "Core probe failed for candidate $rank"
+        printf '%s' "fail"
+        return
     fi
     
-    # Return probe result
-    if [[ $core_status -eq 0 ]]; then
-        echo "pass"
-    else
-        echo "fail"
+    # Run full probe if core passed
+    local full_status=0
+    if [[ -f "${ARTIFACTS_DIR}/logs/core-rank${rank}.log" ]] && grep -q "SUCCESS" "${ARTIFACTS_DIR}/logs/core-rank${rank}.log"; then
+        log_info "Running full probe..."
+        
+        if ! docker run --rm \
+            -v "${ASR_SOLVER_DIR}:/solver" \
+            -w /solver \
+            "asr-probe-full-${cuda_family}" \
+            python3 /solver/container-scripts/full_probe.py \
+                --cuda-family "$cuda_family" \
+                --ctranslate2 "$ctranslate2_version" \
+                --faster-whisper "$faster_whisper_version" \
+                --torch "$torch_version" \
+                --torchaudio "$torchaudio_version" \
+                --whisperx "$whisperx_version" \
+                --constraints "/solver/${artifacts_relative}/constraints-rank${rank}.txt" \
+                --pytorch-index "$pytorch_index" \
+                --log-file "/solver/${artifacts_relative}/logs/full-rank${rank}.log" \
+                --artifacts-dir "/solver/${artifacts_relative}" > "${LOGS_DIR}/full-rank${rank}.log" 2>&1; then
+            log_warn "Full probe failed for candidate $rank"
+            printf '%s' "fail"
+            return
+        fi
+        
+        if [[ -f "${ARTIFACTS_DIR}/logs/full-rank${rank}.log" ]] && grep -q "SUCCESS" "${ARTIFACTS_DIR}/logs/full-rank${rank}.log"; then
+            printf '%s' "pass"
+            return
+        fi
     fi
+    
+    printf '%s' "fail"
 }
 
 # =============================================================================
@@ -167,18 +188,25 @@ run_probes() {
         fi
         
         local result
-        result=$(probe_candidate "$rank" "$candidate")
+        result=$(probe_candidate "$rank" "$candidate" | tr '\n' ' ')
         
-        # Add result to results array
-        results=$(echo "$results" | python3 -c "
-import json,sys
-data = json.load(sys.stdin)
+        # Add result to results array using Python with proper escaping
+        # Use a temporary file to avoid shell escaping issues
+        local temp_file="${ARTIFACTS_DIR}/.temp_result_${rank}.json"
+        python3 -c "
+import json, sys
+data = json.loads(sys.argv[1])
 data.append({
     'candidate_rank': $rank,
-    'status': '$result'
+    'status': sys.argv[2]
 })
-print(json.dumps(data))
-")
+with open('${temp_file}', 'w') as f:
+    json.dump(data, f)
+" "$results" "$result"
+        
+        # Read back the temp file
+        results=$(cat "$temp_file")
+        rm -f "$temp_file"
         
         rank=$((rank + 1))
     done < <(python3 -c "
@@ -189,8 +217,13 @@ for c in data.get('candidates', [])[:$top_candidates]:
     print(json.dumps(c))
 ")
     
-    # Save results
-    echo "$results" > "${ARTIFACTS_DIR}/probe-results.json"
+    # Save results as a dictionary with 'results' key
+    python3 -c "
+import json
+data = json.loads('$results')
+with open('${ARTIFACTS_DIR}/probe-results.json', 'w') as f:
+    json.dump({'results': data}, f, indent=2)
+"
     
     log_info "Probe results saved to ${ARTIFACTS_DIR}/probe-results.json"
 }

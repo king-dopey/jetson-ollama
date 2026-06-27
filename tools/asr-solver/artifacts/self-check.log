@@ -1,0 +1,35 @@
+Self-Check Started: 2026-06-27T11:48:16-07:00
+
+Paths:
+  SCRIPT_DIR=/home/heaps/repos/model64/tools/asr-solver
+  ASR_SOLVER_DIR=/home/heaps/repos/model64/tools/asr-solver
+  REPO_ROOT=/home/heaps/repos/model64
+
+OK: Config file exists
+OK: Config key TARGET_PYTHON=3.12
+OK: Config key TARGET_PLATFORM=linux_aarch64
+OK: Config key CUDA_FAMILIES=cu132 cu130 cu128
+OK: Config key TOP_CANDIDATES=3
+OK: Config key PACKAGE_SET=ctranslate2 faster-whisper torch torchaudio whisperx
+OK: lib/common.sh syntax OK
+OK: lib/config.sh syntax OK
+OK: lib/discover.sh syntax OK
+OK: lib/solve.sh syntax OK
+OK: lib/probe.sh syntax OK
+OK: lib/select.sh syntax OK
+OK: lib/report.sh syntax OK
+OK: lib/debt.sh syntax OK
+OK: python/discover.py syntax OK
+OK: python/solve.py syntax OK
+OK: python/summarize.py syntax OK
+OK: python/metadata_utils.py syntax OK
+OK: docker/Dockerfile.core-probe exists
+OK: docker/Dockerfile.full-probe exists
+OK: container-scripts/entrypoint.sh exists
+OK: container-scripts/core_probe.py exists
+OK: container-scripts/full_probe.py exists
+OK: Command python3 available
+OK: Command docker available
+OK: Artifact directory writable
+
+Self-Check PASSED

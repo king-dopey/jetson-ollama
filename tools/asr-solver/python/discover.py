@@ -251,8 +251,16 @@ def generate_catalog(
                 for v in pytorch_data[family].get('torchaudio', [])[:20]
             ]
     
+    # Use timezone-aware datetime for Python 3.12+ compatibility
+    try:
+        from datetime import timezone
+        generated_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    except (ImportError, AttributeError):
+        # Fallback for older Python versions
+        generated_at = datetime.utcnow().isoformat() + 'Z'
+    
     catalog = {
-        'generated_at': datetime.utcnow().isoformat() + 'Z',
+        'generated_at': generated_at,
         'target': {
             'python': target_python,
             'platform': target_platform,

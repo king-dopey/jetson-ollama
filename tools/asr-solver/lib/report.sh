@@ -36,8 +36,8 @@ generate_report() {
     local selected_file="${ARTIFACTS_DIR}/selected-stack.json"
     local report_file="${ARTIFACTS_DIR}/report.md"
     
-    # Get the relative path from REPO_ROOT (full path inside container)
-    local artifacts_relative="${ARTIFACTS_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR (full path inside container)
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
     # Run report generation using Docker (use relative paths inside container)
     docker run --rm \

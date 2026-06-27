@@ -1,0 +1,113 @@
+{
+  "candidates": [
+    {
+      "rank": 1,
+      "candidate": {
+        "cuda_family": "cu130",
+        "ctranslate2": "4.8.0",
+        "faster_whisper": "1.2.1",
+        "torch": "2.11.0+cu130",
+        "torchaudio": "2.11.0+cu130",
+        "whisperx": "3.8.7rc1"
+      },
+      "score": 204998,
+      "breakdown": {
+        "cuda_score": 200000,
+        "freshness_score": 4998,
+        "freshness_breakdown": {
+          "ctranslate2": 1000,
+          "faster_whisper": 1000,
+          "torch": 998,
+          "torchaudio": 1000,
+          "whisperx": 1000
+        },
+        "wheel_score": 0,
+        "all_wheels": false,
+        "penalty_score": 0,
+        "penalties": [],
+        "probe_score": 0
+      },
+      "is_latest": {
+        "ctranslate2": true,
+        "faster_whisper": false,
+        "torch": false,
+        "torchaudio": true,
+        "whisperx": false
+      },
+      "unknown_dependency_count": 0
+    },
+    {
+      "rank": 2,
+      "candidate": {
+        "cuda_family": "cu130",
+        "ctranslate2": "4.7.2",
+        "faster_whisper": "1.2.1",
+        "torch": "2.11.0+cu130",
+        "torchaudio": "2.11.0+cu130",
+        "whisperx": "3.8.7rc1"
+      },
+      "score": 204997,
+      "breakdown": {
+        "cuda_score": 200000,
+        "freshness_score": 4997,
+        "freshness_breakdown": {
+          "ctranslate2": 999,
+          "faster_whisper": 1000,
+          "torch": 998,
+          "torchaudio": 1000,
+          "whisperx": 1000
+        },
+        "wheel_score": 0,
+        "all_wheels": false,
+        "penalty_score": 0,
+        "penalties": [],
+        "probe_score": 0
+      },
+      "is_latest": {
+        "ctranslate2": false,
+        "faster_whisper": false,
+        "torch": false,
+        "torchaudio": true,
+        "whisperx": false
+      },
+      "unknown_dependency_count": 0
+    },
+    {
+      "rank": 3,
+      "candidate": {
+        "cuda_family": "cu130",
+        "ctranslate2": "4.8.0",
+        "faster_whisper": "1.2.0",
+        "torch": "2.11.0+cu130",
+        "torchaudio": "2.11.0+cu130",
+        "whisperx": "3.8.7rc1"
+      },
+      "score": 204997,
+      "breakdown": {
+        "cuda_score": 200000,
+        "freshness_score": 4997,
+        "freshness_breakdown": {
+          "ctranslate2": 1000,
+          "faster_whisper": 999,
+          "torch": 998,
+          "torchaudio": 1000,
+          "whisperx": 1000
+        },
+        "wheel_score": 0,
+        "all_wheels": false,
+        "penalty_score": 0,
+        "penalties": [],
+        "probe_score": 0
+      },
+      "is_latest": {
+        "ctranslate2": true,
+        "faster_whisper": false,
+        "torch": false,
+        "torchaudio": true,
+        "whisperx": false
+      },
+      "unknown_dependency_count": 0
+    }
+  ],
+  "total_candidates": 4608
+}

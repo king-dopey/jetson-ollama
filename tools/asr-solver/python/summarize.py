@@ -24,7 +24,12 @@ def generate_report(
     # Header
     lines.append("# ASR Solver Report")
     lines.append("")
-    lines.append(f"Generated: {datetime.utcnow().isoformat()}Z")
+    try:
+        from datetime import timezone
+        generated_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    except (ImportError, AttributeError):
+        generated_at = datetime.utcnow().isoformat() + 'Z'
+    lines.append(f"Generated: {generated_at}")
     lines.append("")
     
     # Environment Summary

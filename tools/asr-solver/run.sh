@@ -16,8 +16,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ASR_SOLVER_DIR="$SCRIPT_DIR"
 REPO_ROOT="$(cd -- "$ASR_SOLVER_DIR/../.." && pwd -P)"
 
-# Export ASR_SOLVER_DIR so it's available to sourced scripts
+# Export ASR_SOLVER_DIR and REPO_ROOT so they're available to sourced scripts
 export ASR_SOLVER_DIR
+export REPO_ROOT
 
 # =============================================================================
 # Self-Check Mode
@@ -436,7 +437,7 @@ main() {
 import json
 with open('${ARTIFACTS_DIR}/selected-stack.json') as f:
     data = json.load(f)
-    stack = data.get('stack', {})
+    stack = data.get('stack') or {}
     print(f\"  CUDA Family: {stack.get('cuda_family', 'N/A')}\")
     print(f\"  ctranslate2: {stack.get('ctranslate2', 'N/A')}\")
     print(f\"  faster-whisper: {stack.get('faster_whisper', 'N/A')}\")

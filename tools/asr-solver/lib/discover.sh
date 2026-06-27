@@ -34,8 +34,8 @@ discover_pypi_packages() {
     
     local packages=("ctranslate2" "faster-whisper" "whisperx")
     
-    # Get the relative path from REPO_ROOT to RAW_DIR (full path inside container)
-    local raw_relative="${RAW_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR to RAW_DIR (full path inside container)
+    local raw_relative="${RAW_DIR#$ASR_SOLVER_DIR/}"
     
     for pkg in "${packages[@]}"; do
         local output_file="${RAW_DIR}/pypi-${pkg}.json"
@@ -70,8 +70,8 @@ discover_pytorch_packages() {
     
     read -ra cuda_families <<< "$CUDA_FAMILIES"
     
-    # Get the relative path from REPO_ROOT to RAW_DIR (full path inside container)
-    local raw_relative="${RAW_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR to RAW_DIR (full path inside container)
+    local raw_relative="${RAW_DIR#$ASR_SOLVER_DIR/}"
     
     for family in "${cuda_families[@]}"; do
         local index_url
@@ -141,9 +141,9 @@ generate_catalog() {
     
     local output_file="${ARTIFACTS_DIR}/catalog.json"
     
-    # Get the relative paths from REPO_ROOT (full path inside container)
-    local raw_relative="${RAW_DIR#$REPO_ROOT/}"
-    local artifacts_relative="${ARTIFACTS_DIR#$REPO_ROOT/}"
+    # Get the relative paths from ASR_SOLVER_DIR (full path inside container)
+    local raw_relative="${RAW_DIR#$ASR_SOLVER_DIR/}"
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
     # Use Docker to run Python with all dependencies (use relative paths inside container)
     docker run --rm \
@@ -153,7 +153,7 @@ generate_catalog() {
         python3 /solver/python/discover.py \
             --generate-catalog \
             --raw-dir "/solver/${raw_relative}" \
-            --output "/solver/${artifacts_relative}/catalog.json" \
+            --catalog-output "/solver/${artifacts_relative}/catalog.json" \
             --target-python "$TARGET_PYTHON" \
             --target-platform "$TARGET_PLATFORM" \
             --cuda-families "$CUDA_FAMILIES"

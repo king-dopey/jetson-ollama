@@ -33,8 +33,8 @@ run_solver() {
     
     local output_file="${ARTIFACTS_DIR}/candidate-stacks.json"
     
-    # Get the relative path from REPO_ROOT (full path inside container)
-    local artifacts_relative="${ARTIFACTS_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR (full path inside container)
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
     # Use Docker to run Python with all dependencies (use relative paths inside container)
     docker run --rm \

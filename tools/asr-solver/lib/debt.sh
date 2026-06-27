@@ -35,8 +35,8 @@ generate_debt() {
     local debt_md_file="${ARTIFACTS_DIR}/tech-debt.md"
     local debt_json_file="${ARTIFACTS_DIR}/tech-debt.json"
     
-    # Get the relative path from REPO_ROOT (full path inside container)
-    local artifacts_relative="${ARTIFACTS_DIR#$REPO_ROOT/}"
+    # Get the relative path from ASR_SOLVER_DIR (full path inside container)
+    local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
     # Run tech debt generation using Docker (use relative paths inside container)
     docker run --rm \
@@ -46,6 +46,8 @@ generate_debt() {
         python3 /solver/python/summarize.py \
             --generate-debt \
             --catalog "/solver/${artifacts_relative}/catalog.json" \
+            --candidates "/solver/${artifacts_relative}/candidate-stacks.json" \
+            --probe-results "/solver/${artifacts_relative}/probe-results.json" \
             --selected "/solver/${artifacts_relative}/selected-stack.json" \
             --output-md "/solver/${artifacts_relative}/tech-debt.md" \
             --output-json "/solver/${artifacts_relative}/tech-debt.json"
