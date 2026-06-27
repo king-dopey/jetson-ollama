@@ -85,3 +85,36 @@ free -h
 - Orin default is preserved when `PROFILE` is unset.
 - Runtime profile model policy is mounted into router at `/app/model_policy.yml` from `profiles/<profile>/models.yaml`.
 - The repository does not include a first-party LibreChat compose file; it provides profile-resolved LibreChat modelspec files for external LibreChat deployment.
+
+## ASR Service Configuration
+
+The ASR service uses different Python versions per profile to match the Jetson wheel ABI:
+
+| Profile | Python Base | Torch Index | Dockerfile |
+|---------|-------------|-------------|------------|
+| `orin` | Python 3.10 (cp310 wheels) | `jp6/cu126` | `asr/Dockerfile` |
+| `thor` | Python 3.12 (cp312 wheels) | `jp7/cu126` | `asr/Dockerfile.thor` |
+
+### Starting ASR by Profile
+
+```bash
+# Orin ASR (default)
+PROFILE=orin docker compose --profile asr up -d
+
+# Thor ASR
+PROFILE=thor docker compose --profile asr up -d
+```
+
+### Build-time Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ASR_DOCKERFILE` | `Dockerfile` | ASR Dockerfile to use (`Dockerfile` or `Dockerfile.thor`) |
+| `ASR_TORCH_INDEX_URL` | `jp6/cu126` | Jetson wheel index (Orin: `jp6`, Thor: `jp7`) |
+
+### Validation
+
+```bash
+# Validate Thor ASR configuration
+./scripts/validation/validate-thor-asr.sh
+```

@@ -1,0 +1,101 @@
+modelSpecs:
+  list:
+    - name: 'agent_planning_prompt_drafter'
+      label: 'Planning Prompt Drafter'
+      description: 'Drafts the first planning prompt artifact only.'
+      skills:
+        - 'repo-architecture-constraints'
+        - 'module-boundaries'
+        - 'coding-conventions'
+        - 'validation-command-inventory'
+      subagents:
+        enabled: false
+        allowSelf: false
+        agent_ids: []
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_PLANNING_PROMPT_DRAFTER_ID'
+    - name: 'agent_planning_prompt_refiner'
+      label: 'Planning Prompt Refiner'
+      description: 'Refines one planning prompt draft into a stronger final planning prompt only.'
+      skills:
+        - 'scope-control-rules'
+        - 'constraint-handling'
+        - 'ambiguity-removal'
+        - 'handoff-quality-rules'
+      subagents:
+        enabled: false
+        allowSelf: false
+        agent_ids: []
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_PLANNING_PROMPT_REFINER_ID'
+    - name: 'agent_planning_prompt_parent'
+      label: 'Planning Prompt Parent'
+      description: 'Produces the final planning prompt artifact only.'
+      skills:
+        - 'repo-architecture-constraints'
+        - 'module-boundaries'
+        - 'dependency-version-policy'
+        - 'coding-conventions'
+        - 'security-constraints'
+        - 'validation-command-inventory'
+        - 'documentation-update-policy'
+      subagents:
+        enabled: true
+        allowSelf: false
+        agent_ids:
+          - 'agent_planning_prompt_drafter'
+          - 'agent_planning_prompt_refiner'
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_PLANNING_PROMPT_PARENT_ID'
+    - name: 'agent_implementation_prompt_drafter'
+      label: 'Implementation Prompt Drafter'
+      description: 'Drafts the first implementation prompt artifact only.'
+      skills:
+        - 'file-targeting-rules'
+        - 'scope-control-rules'
+        - 'test-command-inventory'
+        - 'coding-conventions'
+      subagents:
+        enabled: false
+        allowSelf: false
+        agent_ids: []
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_IMPLEMENTATION_PROMPT_DRAFTER_ID'
+    - name: 'agent_implementation_prompt_refiner'
+      label: 'Implementation Prompt Refiner'
+      description: 'Refines one implementation prompt draft into a narrower, safer, testable prompt only.'
+      skills:
+        - 'validation-command-inventory'
+        - 'rollback-fallback-policy'
+        - 'anti-overreach-rules'
+        - 'file-targeting-rules'
+      subagents:
+        enabled: false
+        allowSelf: false
+        agent_ids: []
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_IMPLEMENTATION_PROMPT_REFINER_ID'
+    - name: 'agent_implementation_prompt_parent'
+      label: 'Implementation Prompt Parent'
+      description: 'Produces the final implementation prompt artifact only.'
+      skills:
+        - 'repo-architecture-constraints'
+        - 'coding-conventions'
+        - 'validation-command-inventory'
+        - 'dependency-version-policy'
+        - 'security-constraints'
+        - 'documentation-update-policy'
+      subagents:
+        enabled: true
+        allowSelf: false
+        agent_ids:
+          - 'agent_implementation_prompt_drafter'
+          - 'agent_implementation_prompt_refiner'
+      preset:
+        endpoint: 'agents'
+        agent_id: 'REPLACE_WITH_AGENT_IMPLEMENTATION_PROMPT_PARENT_ID'

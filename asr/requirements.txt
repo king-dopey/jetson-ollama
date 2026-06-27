@@ -3,16 +3,15 @@ httpx==0.28.1
 uvicorn==0.49.0
 openai==2.43.0
 transformers==4.57.6
-faster-whisper==1.2.1
-whisperx==3.8.6
-# WhisperX 3.8.6 requires huggingface-hub<1.0.0.
+# faster-whisper and whisperx installed separately with --no-deps to avoid
+# overwriting GPU torch and to prevent PyPI ctranslate2 from being installed
+# whisperx==3.8.6 declares torch~=2.8.0 which would overwrite the GPU torch install
 huggingface-hub==0.36.2
-# Python 3.10 aarch64 wheels currently publish up to 4.6.2.
-# Keep in sync with faster-whisper (<5,>=4.0) and whisperx (>=4.5.0).
-ctranslate2==4.6.2
+# CTranslate2 is built from source with CUDA support in Dockerfile.
+# Do not install from PyPI as the wheel is CPU-only on aarch64.
 pyannote-audio==4.0.4
-# NumPy 2.3+ requires Python >=3.11; ASR image is Python 3.10 for Jetson cp310 torch wheels.
-numpy==2.2.6
+# NumPy 2.3+ requires Python >=3.11; ASR image is now Python 3.12 for JetPack 7.2.
+numpy==2.3.0
 soundfile==0.14.0
 pydantic==2.13.4
 python-multipart==0.0.32

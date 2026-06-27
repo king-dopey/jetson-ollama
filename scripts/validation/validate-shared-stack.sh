@@ -30,6 +30,9 @@ assert_contains "$main_cfg" "target: /profiles/models.yaml" "warmup selected pro
 assert_contains "$router_cfg" "source: ${ROOT_DIR}/profiles/${PROFILE_NAME}/models.yaml" "router selected profile source"
 assert_contains "$router_cfg" "target: /app/model_policy.yml" "router selected profile target"
 
+# Verify ASR dockerfile variable is present in compose config (expanded form)
+assert_contains "$main_cfg" "ASR_DOCKERFILE:" "ASR dockerfile environment variable"
+
 if ! grep -Fq 'registry.librechat.ai/danny-avila/librechat:0.8.6' "${ROOT_DIR}/librachat.json"; then
   fail "librachat.json is not pinned to LibreChat 0.8.6"
 fi

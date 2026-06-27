@@ -1,0 +1,59 @@
+# Diagnostic Dockerfile for ASR CUDA environment inspection
+# This file is used to inspect the CUDA environment BEFORE the failing CTranslate2 build step.
+#
+# Usage on Jetson Thor:
+#   cd /home/heaps/model128
+#   docker build -f asr/Dockerfile.diagnostic -t asr-diagnostic ./asr
+#   docker run --rm --runtime nvidia asr-diagnostic > /tmp/cuda_diagnostic_report.txt 2>&1
+
+FROM python:3.12-slim-bookworm
+
+ARG ASR_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
+ARG ASR_TORCH_VERSION=2.12.1+cu130
+ARG ASR_TORCHAUDIO_VERSION=2.11.0+cu130
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install build dependencies for CTranslate2 with CUDA support
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    cmake \
+    g++ \
+    gcc \
+    make \
+    pkg-config \
+    libopenblas-dev \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install system dependencies for Whisper and audio processing
+RUN apt-get update && apt-get install -y \
+    --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (same as ASR build up to this point)
+COPY requirements.txt ./
+RUN pip install --no-cache-dir \
+    --index-url "${ASR_TORCH_INDEX_URL}" \
+    "torch==${ASR_TORCH_VERSION}" \
+    "torchaudio==${ASR_TORCHAUDIO_VERSION}"
+
+# Install whisperx and faster-whisper with --no-deps
+RUN pip install --no-cache-dir --no-deps whisperx==3.8.6 faster-whisper==1.2.1
+
+# Install remaining dependencies from requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the diagnostic script
+COPY scripts/debug_cuda_env.sh /scripts/debug_cuda_env.sh
+RUN chmod +x /scripts/debug_cuda_env.sh
+
+# Run the diagnostic script at container startup
+CMD ["/scripts/debug_cuda_env.sh"]

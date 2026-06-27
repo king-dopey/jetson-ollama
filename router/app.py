@@ -160,7 +160,7 @@ async def _warmup_model(model: str, entry: dict[str, Any]) -> None:
         "options": {**(entry.get("options") or {}), "num_predict": 1},
     }
     try:
-        timeout = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=30.0)
+        timeout = httpx.Timeout(connect=10.0, read=1200.0, write=30.0, pool=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
             r.raise_for_status()
@@ -621,7 +621,7 @@ async def _ollama_post(path: str, payload: dict, stream: bool = False,):
     logger.debug("Calling _ollama_post to %s with model %s", path, payload.get("model"))
     timeout = httpx.Timeout(
         connect=10.0,
-        read=600.0,      # 10 min: covers prefill + full num_predict generation
+        read=1200.0,      # 10 min: covers prefill + full num_predict generation
         write=30.0,
         pool=30.0,
     )
@@ -742,7 +742,7 @@ async def chat_completions(request: Request):
                 try:
                     logger.debug("About to call Ollama /api/chat for streaming model %s", model)
                     timeout = httpx.Timeout(
-                        connect=10.0, read=600.0, write=30.0, pool=30.0
+                        connect=10.0, read=1200.0, write=30.0, pool=30.0
                     )
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         async with client.stream(
@@ -990,7 +990,7 @@ async def _asr_post_json(base_url: str, path: str, payload: dict):
     logger.debug("Calling _asr_post_json to %s", path)
     timeout = httpx.Timeout(
         connect=10.0,
-        read=600.0,
+        read=1200.0,
         write=30.0,
         pool=30.0,
     )
@@ -1014,7 +1014,7 @@ async def _asr_post_multipart(
     logger.debug("Calling _asr_post_multipart to %s", path)
     timeout = httpx.Timeout(
         connect=10.0,
-        read=600.0,
+        read=1200.0,
         write=30.0,
         pool=30.0,
     )

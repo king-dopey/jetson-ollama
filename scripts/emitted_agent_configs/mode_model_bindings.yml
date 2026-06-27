@@ -1,0 +1,28 @@
+modeBindings:
+  planning-prompt:
+    provider: librechat-agents
+    model_or_agent: 'agent_planning_prompt_parent'
+  planner:
+    provider: thor-router
+    model_or_agent: 'qwen3.6:35b-a3b-q8_0'
+  implementation-prompt:
+    provider: librechat-agents
+    model_or_agent: 'agent_implementation_prompt_parent'
+  implementer:
+    provider: thor-router
+    model_or_agent: 'qwen3-coder-next:q4_K_M'
+  tester:
+    provider: thor-router
+    model_or_agent: 'qwen3.6:35b-a3b-q8_0'
+  reviewer:
+    provider: thor-router
+    model_or_agent: 'north-mini-code-1.0:q8_0'
+  acceptance-judge:
+    provider: thor-router
+    model_or_agent: 'granite4.1-guardian:8b-q6_K'
+  diagnoser:
+    provider: thor-router
+    model_or_agent: 'qwen3.6:35b-a3b-q8_0'
+  orchestrator:
+    provider: thor-router
+    model_or_agent: 'qwen3.6:35b-a3b-q8_0'

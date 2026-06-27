@@ -69,9 +69,9 @@ services:
       context: ./asr
       dockerfile: Dockerfile
       args:
-        ASR_TORCH_INDEX_URL: ${ASR_TORCH_INDEX_URL:-https://pypi.jetson-ai-lab.io/jp6/cu126}
-        ASR_TORCH_VERSION: ${ASR_TORCH_VERSION:-2.8.0}
-        ASR_TORCHAUDIO_VERSION: ${ASR_TORCHAUDIO_VERSION:-2.8.0}
+        - ASR_TORCH_INDEX_URL=${ASR_TORCH_INDEX_URL}
+        - ASR_TORCH_VERSION=${ASR_TORCH_VERSION}
+        - ASR_TORCHAUDIO_VERSION=${ASR_TORCHAUDIO_VERSION}
     container_name: asr-service
     restart: unless-stopped
     runtime: nvidia

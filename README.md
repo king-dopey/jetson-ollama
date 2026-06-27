@@ -526,6 +526,70 @@ If CUDA is intentionally unavailable, set both:
 
 This enables explicit degraded CPU startup and will report `degradation_reason` in health diagnostics.
 
+## Dual-Target Deployment (Orin + Thor)
+
+This repository supports both Jetson AGX Orin 64GB and Jetson AGX Thor 128GB with profile-driven configuration. The same compose architecture is used for both boards, with behavior selected via the `PROFILE` environment variable.
+
+### Profile Selection
+
+| Profile | Target Board | Default Context | Model Policy |
+|---------|--------------|-----------------|--------------|
+| `orin` (default) | Jetson AGX Orin 64GB | `16384` | `profiles/orin/models.yaml` |
+| `thor` | Jetson AGX Thor 128GB | `262144` | `profiles/thor/models.yaml` |
+
+### Starting Services by Profile
+
+```bash
+# Orin (default)
+PROFILE=orin docker compose up -d
+# Orin default also applies if PROFILE is unset:
+docker compose up -d
+
+# Thor
+PROFILE=thor docker compose up -d
+```
+
+### ASR Service with Dual-Target
+
+The ASR service uses different Python versions per profile to match the Jetson wheel ABI:
+
+| Profile | Python Base | Torch Index | Dockerfile |
+|---------|-------------|-------------|------------|
+| `orin` | Python 3.10 (cp310 wheels) | `jp6/cu126` | `asr/Dockerfile` |
+| `thor` | Python 3.12 (cp312 wheels) | `jp7/cu126` | `asr/Dockerfile.thor` |
+
+The ASR Dockerfile is selected automatically via the `ASR_DOCKERFILE` environment variable, which is set per-profile in `profiles/*/stack.env`.
+
+To build and run ASR with a specific profile:
+
+```bash
+# Orin ASR (default)
+PROFILE=orin docker compose --profile asr up -d
+
+# Thor ASR
+PROFILE=thor docker compose --profile asr up -d
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROFILE` | `orin` | Board profile (`orin` or `thor`) |
+| `ASR_DOCKERFILE` | `Dockerfile` | ASR Dockerfile to use (`Dockerfile` or `Dockerfile.thor`) |
+| `ASR_TORCH_INDEX_URL` | `jp6/cu126` | Jetson wheel index (Orin: `jp6`, Thor: `jp7`) |
+
+### Validation
+
+Run the validation scripts to verify both profiles:
+
+```bash
+# Validate Orin configuration
+./scripts/validation/validate-shared-stack.sh orin
+
+# Validate Thor configuration
+./scripts/validation/validate-thor-asr.sh
+```
+
 ## On-Demand Model Auto-Pull
 
 Configured models can now be auto-pulled on first request. When a configured model such as `qwen3-coder-next:q4_K_M` is requested and is not already present in Ollama, the router will automatically pull it before forwarding the chat request.

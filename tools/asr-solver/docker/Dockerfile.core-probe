@@ -1,0 +1,45 @@
+# =============================================================================
+# ASR Solver - Core Probe Dockerfile
+# =============================================================================
+# Builds a minimal probe image for testing core ASR stack functionality.
+# =============================================================================
+
+ARG BASE_IMAGE=nvidia/cuda:13.2.0-runtime-ubuntu24.04
+
+FROM ${BASE_IMAGE}
+
+# =============================================================================
+# System Dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3-pip \
+    python3.12-venv \
+    ffmpeg \
+    libsndfile1 \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Create Virtual Environment
+# =============================================================================
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip --quiet
+
+# =============================================================================
+# Work Directory
+# =============================================================================
+WORKDIR /work
+
+# Copy constraints file if provided
+COPY constraints.txt* /work/
+
+# Entrypoint
+COPY container-scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
