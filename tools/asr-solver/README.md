@@ -1,6 +1,6 @@
 # ASR Solver - Dependency Compatibility Discovery System
 
-A deterministic solver that finds the newest viable dependency stack for ASR on Jetson.
+A deterministic solver that finds the newest viable dependency stack for ASR on Jetson devices.
 
 ## Overview
 
@@ -12,12 +12,14 @@ This tool discovers, ranks, probes, and selects compatible versions of:
 - `torchaudio`
 - `whisperx`
 
+It is designed to work with NVIDIA Jetson devices (linux_aarch64) running CUDA 12.8, 13.0, or 13.2, and targets Python 3.12 environments.
+
 ## Features
 
-1. **Discovery**: Automatically fetches version metadata from PyPI and PyTorch
-2. **Solving**: Constructs candidate stacks with explicit scoring and ranking
-3. **Probing**: Runtime validation of top candidates on Jetson hardware
-4. **Selection**: Picks the best viable stack with full transparency
+1. **Discovery**: Automatically fetches version metadata from PyPI and PyTorch wheel indexes
+2. **Solving**: Constructs candidate stacks with explicit scoring and ranking based on CUDA family, package freshness, and wheel availability
+3. **Probing**: Runtime validation of top candidates in Docker containers with full stack testing (import verification, smoke tests)
+4. **Selection**: Picks the best viable stack with full transparency and rejection rationale
 5. **Tech Debt**: Automatically generates debt tracking for non-latest selections
 
 ## Usage
@@ -61,9 +63,9 @@ bash tools/asr-solver/run.sh --no-cache
 
 Edit `tools/asr-solver/config.env` to customize:
 
-- Target Python version
-- CUDA families to consider (in priority order)
-- Number of top candidates to probe
+- Target Python version (default: 3.12)
+- CUDA families to consider (in priority order): cu132, cu130, cu128
+- Number of top candidates to probe (default: 3)
 - Docker images for each CUDA family
 
 ## Output Artifacts
@@ -73,15 +75,15 @@ All outputs are written to `tools/asr-solver/artifacts/<timestamp>/`:
 | File | Description |
 |------|-------------|
 | `catalog.json` | All discovered versions and metadata |
-| `candidate-stacks.json` | Ranked candidate stacks with scores |
-| `probe-results.json` | Runtime probe results for top candidates |
-| `selected-stack.json` | Final winner with selection rationale |
-| `selected-stack.env` | Environment variables for the winner |
-| `report.md` | Human-readable summary report |
-| `tech-debt.md` | Debt tracking for non-latest selections |
+| `candidate-stacks.json` | Ranked candidate stacks with scores and breakdowns |
+| `probe-results.json` | Runtime probe results (pass/fail status for each candidate) |
+| `selected-stack.json` | Final winner with selection rationale and stack details |
+| `selected-stack.env` | Environment variables for the winner (sourceable) |
+| `report.md` | Human-readable summary report with tables |
+| `tech-debt.md` | Debt tracking markdown for non-latest selections |
 | `tech-debt.json` | Machine-readable debt data |
-| `logs/` | Raw probe execution logs |
-| `raw/` | Raw discovery data (PyPI JSON, pip index output) |
+| `logs/` | Raw probe execution logs (core-rank*.log, full-rank*.log) |
+| `raw/` | Raw discovery data (PyPI JSON, pip index output, version lists) |
 
 ## Scoring Formula
 
@@ -112,6 +114,23 @@ The solver follows this exact preference order:
 7. **No source builds** - pure wheel installs preferred
 8. **Older CUDA only as fallback** - cu128 and older only if 13.x fails
 
+## Probe Phases
+
+The probe phase consists of two stages:
+
+### Core Probe
+- Installs torch, torchaudio, ctranslate2, faster-whisper
+- Verifies Python imports for each package
+- Tests CUDA runtime availability (libcudart)
+- Generates synthetic WAV file and runs transcription smoke test
+- Exits with status "pass" if all checks succeed
+
+### Full Probe
+- Installs whisperx on top of core stack
+- Verifies whisperx import and initialization
+- Validates complete ASR pipeline compatibility
+- Exits with status "pass" if full stack works
+
 ## Error Codes
 
 | Code | Description |
@@ -130,6 +149,41 @@ The solver follows this exact preference order:
 | `no_viable_candidate` | No candidate passed core probe |
 | `unknown_error` | Unexpected error occurred |
 
+## Troubleshooting
+
+### Docker Image Not Found Errors
+
+If you see errors like `[ERROR] Docker image asr-probe-core- not found`, ensure:
+- The CUDA family is correctly extracted from candidate-stacks.json (nested under `candidate` key)
+- Docker images are built before running probes (the pipeline handles this automatically)
+
+### Probe Failing with "Core probe complete" but Status Fail
+
+The probe phase checks for "Core probe complete" and "Full probe complete" markers in log files. If these markers are missing:
+- Check the core-rank*.log and full-rank*.log files for error messages
+- Ensure numpy and scipy are installed in probe Docker images (required for WAV generation)
+
+### Package Installation Timeout
+
+If pip install commands timeout during probing:
+- The subprocess timeout is set to 600 seconds (10 minutes) by default
+- Large package installations (torch, torchaudio) on Jetson devices may take several minutes
+- Ensure sufficient disk space and network bandwidth
+
+### Whisperx Import Failing
+
+If whisperx import fails during full probe:
+- Verify whisperx is installed via pip show
+- Check that torch and torchaudio versions are compatible with the whisperx version
+- The probe handles missing `__version__` attribute gracefully (uses getattr())
+
+### No Viable Candidate Selected
+
+If the selection phase reports "no_viable_candidate":
+- Check probe-results.json for candidate pass/fail status
+- Review core-rank*.log and full-rank*.log files for specific failure reasons
+- Ensure the Docker solver environment has access to PyPI and PyTorch indexes
+
 ## Integration with ASR Service
 
 The generated `selected-stack.env` file contains the exact versions to use:
@@ -147,9 +201,40 @@ This provides environment variables for the final ASR implementation:
 - `ASR_FASTER_WHISPER_VERSION`
 - `ASR_WHISPERX_VERSION`
 
+## Architecture
+
+```
+tools/asr-solver/
+├── run.sh                    # Main entry point (orchestrates all phases)
+├── config.env                # Configuration file
+├── lib/                      # Shell script libraries
+│   ├── common.sh             # Logging and utility functions
+│   ├── discover.sh           # Discovery phase logic
+│   ├── solve.sh              # Solve/ranking phase logic
+│   ├── probe.sh              # Probe phase logic (Docker image build, execution)
+│   ├── select.sh             # Selection phase logic
+│   ├── report.sh             # Report generation logic
+│   └── debt.sh               # Tech debt generation logic
+├── python/                   # Python modules
+│   ├── discover.py           # PyPI and PyTorch version discovery
+│   ├── solve.py              # Candidate construction, scoring, and selection
+│   ├── summarize.py          # Report generation
+│   └── metadata_utils.py     # Version parsing utilities
+├── docker/                   # Dockerfiles
+│   ├── Dockerfile.core-probe # Core probe container (torch, ctranslate2, faster-whisper)
+│   └── Dockerfile.full-probe # Full probe container (adds whisperx)
+├── container-scripts/        # Scripts executed inside probe containers
+│   ├── core_probe.py         # Core probe logic (install, import test, smoke test)
+│   ├── full_probe.py         # Full probe logic (whisperx validation)
+│   ├── install_core.sh       # Core package installation script
+│   └── entrypoint.sh         # Container entrypoint
+├── artifacts/                # Output directory (timestamped subdirectories)
+└── README.md                 # This file
+```
+
 ## Requirements
 
 - Python 3.12+
 - Docker (for runtime probing)
-- Network access to PyPI and PyTorch
+- Network access to PyPI and PyTorch wheel indexes
 - Jetson device for final validation
