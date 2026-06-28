@@ -76,12 +76,12 @@ probe_candidate() {
     local whisperx_version
     
     # Parse candidate JSON
-    cuda_family=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('cuda_family',''))")
-    ctranslate2_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ctranslate2',''))")
-    faster_whisper_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('faster_whisper',''))")
-    torch_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('torch',''))")
-    torchaudio_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('torchaudio',''))")
-    whisperx_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('whisperx',''))")
+    cuda_family=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('cuda_family',''))")
+    ctranslate2_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('ctranslate2',''))")
+    faster_whisper_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('faster_whisper',''))")
+    torch_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('torch',''))")
+    torchaudio_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('torchaudio',''))")
+    whisperx_version=$(echo "$candidate_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('candidate', {}).get('whisperx',''))")
     
     local log_file="${LOGS_DIR}/core-rank${rank}.log"
     local full_log_file="${LOGS_DIR}/full-rank${rank}.log"
@@ -105,6 +105,13 @@ EOF
     log_info "Running core probe..."
     local artifacts_relative="${ARTIFACTS_DIR#$ASR_SOLVER_DIR/}"
     
+    # Verify Docker image exists before running
+    if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^asr-probe-core-${cuda_family}:"; then
+        log_error "Docker image asr-probe-core-${cuda_family} not found"
+        printf '%s' "fail"
+        return
+    fi
+
     if ! docker run --rm \
         -v "${ASR_SOLVER_DIR}:/solver" \
         -w /solver \
@@ -126,9 +133,16 @@ EOF
     
     # Run full probe if core passed
     local full_status=0
-    if [[ -f "${ARTIFACTS_DIR}/logs/core-rank${rank}.log" ]] && grep -q "SUCCESS" "${ARTIFACTS_DIR}/logs/core-rank${rank}.log"; then
+    if [[ -f "${ARTIFACTS_DIR}/logs/core-rank${rank}.log" ]] && grep -q "Core probe complete" "${ARTIFACTS_DIR}/logs/core-rank${rank}.log"; then
         log_info "Running full probe..."
         
+        # Verify Docker image exists before running
+        if ! docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "^asr-probe-full-${cuda_family}:"; then
+            log_error "Docker image asr-probe-full-${cuda_family} not found"
+            printf '%s' "fail"
+            return
+        fi
+
         if ! docker run --rm \
             -v "${ASR_SOLVER_DIR}:/solver" \
             -w /solver \
@@ -149,7 +163,7 @@ EOF
             return
         fi
         
-        if [[ -f "${ARTIFACTS_DIR}/logs/full-rank${rank}.log" ]] && grep -q "SUCCESS" "${ARTIFACTS_DIR}/logs/full-rank${rank}.log"; then
+        if [[ -f "${ARTIFACTS_DIR}/logs/full-rank${rank}.log" ]] && grep -q "Full probe complete" "${ARTIFACTS_DIR}/logs/full-rank${rank}.log"; then
             printf '%s' "pass"
             return
         fi

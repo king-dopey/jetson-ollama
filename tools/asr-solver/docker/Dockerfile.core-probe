@@ -30,6 +30,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Upgrade pip
 RUN python -m pip install --upgrade pip --quiet
 
+# Install numpy and scipy for WAV generation
+RUN python -m pip install numpy scipy --quiet
+
 # =============================================================================
 # Work Directory
 # =============================================================================

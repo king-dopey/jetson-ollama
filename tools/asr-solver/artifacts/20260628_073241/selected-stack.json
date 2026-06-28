@@ -1,0 +1,15 @@
+{
+  "selection_reason": "Selected full_stack stack",
+  "stack": {
+    "cuda_family": "cu130",
+    "ctranslate2": "4.8.0",
+    "faster_whisper": "1.2.1",
+    "torch": "2.11.0+cu130",
+    "torchaudio": "2.11.0+cu130",
+    "whisperx": "3.8.7rc1"
+  },
+  "selected_rank": 1,
+  "selected_score": 204998,
+  "stack_mode": "full_stack",
+  "rejected_candidates": []
+}

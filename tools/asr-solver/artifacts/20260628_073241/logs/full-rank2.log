@@ -1,0 +1,17 @@
+/solver/container-scripts/full_probe.py:37: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  f.write(f"[{datetime.utcnow().isoformat()}Z] {message}\n")
+[2026-06-28T14:37:56.697280Z] whisperx install successful
+[2026-06-28T14:37:56.997755Z] whisperx pip show: Name: whisperx
+Version: 3.8.7rc1
+Summary: Time-Accurate Automatic Speech Recognition using Whisper.
+Home-page: 
+Author: Max Bain
+Author-email: 
+License: BSD-2-Clause
+Location: /opt/venv/lib/python3.12
+[2026-06-28T14:37:56.997850Z] Running whisperx import probe...
+[2026-06-28T14:37:57.014310Z] whisperx import probe output: 'VERSION:unknown
+MINIMAL_INIT:pass
+'
+[2026-06-28T14:37:57.014376Z] whisperx: unknown, init: pass, status: pass
+[2026-06-28T14:37:57.014991Z] Full probe complete

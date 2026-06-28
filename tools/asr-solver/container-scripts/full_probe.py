@@ -22,7 +22,7 @@ def run_command(cmd: list, cwd: str = None) -> tuple:
             capture_output=True,
             text=True,
             cwd=cwd,
-            timeout=120
+            timeout=600
         )
         return result.returncode == 0, result.stdout + result.stderr
     except subprocess.TimeoutExpired:
@@ -49,7 +49,7 @@ def probe_whisperx_import(log_file: str) -> Dict[str, Any]:
 import sys
 try:
     import whisperx
-    print(f"VERSION:{whisperx.__version__}")
+    print(f"VERSION:{getattr(whisperx, '__version__', 'unknown')}")
     
     # Minimal init - just check we can import
     print("MINIMAL_INIT:pass")
@@ -61,6 +61,8 @@ except Exception as e:
 '''
     
     success, output = run_command([sys.executable, '-c', code])
+    
+    log_message(log_file, f"whisperx import probe output: '{output[:200]}'")
     
     if success:
         for line in output.split('\n'):
@@ -166,10 +168,18 @@ def main():
     
     log_message(log_file, "whisperx install successful")
     
+    # Verify whisperx is installed
+    verify_cmd = [sys.executable, '-m', 'pip', 'show', 'whisperx']
+    success, output = run_command(verify_cmd)
+    if success:
+        log_message(log_file, f"whisperx pip show: {output[:200]}")
+    else:
+        log_message(log_file, "whisperx not found via pip show")
+    
     # Probe whisperx
     log_message(log_file, "Running whisperx import probe...")
     wx_result = probe_whisperx_import(log_file)
-    log_message(log_file, f"whisperx: {wx_result['version']}, init: {wx_result['minimal_init']}")
+    log_message(log_file, f"whisperx: {wx_result['version']}, init: {wx_result['minimal_init']}, status: {wx_result['import_status']}")
     
     # Build result
     result = {

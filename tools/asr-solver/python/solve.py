@@ -384,11 +384,11 @@ def solve(
         latest = catalog.get('latest', {})
         
         is_latest = {
-            'ctranslate2': c['ctranslate2'] == latest.get('ctranslate2', ''),
-            'faster_whisper': c['faster_whisper'] == latest.get('faster_whisper', ''),
-            'torch': c['torch'] == latest.get('torch', {}).get(c['cuda_family'], ''),
-            'torchaudio': c['torchaudio'] == latest.get('torchaudio', {}).get(c['cuda_family'], ''),
-            'whisperx': c['whisperx'] == latest.get('whisperx', '')
+            'ctranslate2': normalize_version(c['ctranslate2']) >= normalize_version(latest.get('ctranslate2', '0.0.0')),
+            'faster_whisper': normalize_version(c['faster_whisper']) >= normalize_version(latest.get('faster_whisper', '0.0.0')),
+            'torch': normalize_version(c['torch']) >= normalize_version(latest.get('torch', {}).get(c['cuda_family'], '0.0.0')),
+            'torchaudio': normalize_version(c['torchaudio']) >= normalize_version(latest.get('torchaudio', {}).get(c['cuda_family'], '0.0.0')),
+            'whisperx': normalize_version(c['whisperx']) >= normalize_version(latest.get('whisperx', '0.0.0'))
         }
         
         # Count unknown dependencies (simplified)
@@ -450,7 +450,8 @@ def select_winner(
         rank = c.get('rank', 0)
         pr = probe_lookup.get(rank, {})
         
-        core_status = pr.get('core_probe', {}).get('status', 'fail')
+        # Support both old format (pr['status']) and new format (pr['core_probe']['status'])
+        core_status = pr.get('core_probe', {}).get('status', pr.get('status', 'fail'))
         
         if core_status == 'pass':
             winner = c
@@ -469,7 +470,8 @@ def select_winner(
     # Determine stack mode
     rank = winner.get('rank', 0)
     pr = probe_lookup.get(rank, {})
-    full_status = pr.get('full_probe', {}).get('status', 'fail')
+    # Determine full status - support both detailed format and simplified format
+    full_status = pr.get('full_probe', {}).get('status', pr.get('status', 'fail'))
     
     if full_status == 'pass':
         stack_mode = 'full_stack'

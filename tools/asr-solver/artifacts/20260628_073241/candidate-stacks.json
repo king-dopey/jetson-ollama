@@ -29,10 +29,10 @@
       },
       "is_latest": {
         "ctranslate2": true,
-        "faster_whisper": false,
+        "faster_whisper": true,
         "torch": false,
         "torchaudio": true,
-        "whisperx": false
+        "whisperx": true
       },
       "unknown_dependency_count": 0
     },
@@ -65,10 +65,10 @@
       },
       "is_latest": {
         "ctranslate2": false,
-        "faster_whisper": false,
+        "faster_whisper": true,
         "torch": false,
         "torchaudio": true,
-        "whisperx": false
+        "whisperx": true
       },
       "unknown_dependency_count": 0
     },
@@ -101,13 +101,13 @@
       },
       "is_latest": {
         "ctranslate2": true,
-        "faster_whisper": false,
+        "faster_whisper": true,
         "torch": false,
         "torchaudio": true,
-        "whisperx": false
+        "whisperx": true
       },
       "unknown_dependency_count": 0
     }
   ],
-  "total_candidates": 4608
+  "total_candidates": 2048
 }

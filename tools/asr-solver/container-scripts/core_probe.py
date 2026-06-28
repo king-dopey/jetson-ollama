@@ -23,7 +23,7 @@ def run_command(cmd: list, cwd: str = None) -> tuple:
             capture_output=True,
             text=True,
             cwd=cwd,
-            timeout=120
+            timeout=600
         )
         return result.returncode == 0, result.stdout + result.stderr
     except subprocess.TimeoutExpired:

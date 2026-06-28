@@ -15,7 +15,7 @@ ASR_SOLVER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Logging Functions
 # =============================================================================
 log_info() {
-    echo "[INFO] $*"
+    echo "[INFO] $*" >&2
 }
 
 log_warn() {

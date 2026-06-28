@@ -59,7 +59,7 @@ def generate_report(
     lines.append("")
     latest = catalog.get('latest', {})
     lines.append(f"- **ctranslate2**: {latest.get('ctranslate2', 'N/A')}")
-    lines.append(f"- **faster-whisper**: {latest.get('faster_whisper', 'N/A')}")
+    lines.append(f"- **faster-whisper**: {latest.get('faster-whisper', latest.get('faster_whisper', 'N/A'))}")
     lines.append(f"- **whisperx**: {latest.get('whisperx', 'N/A')}")
     lines.append("")
     lines.append("### PyTorch Latest Versions by CUDA Family")
