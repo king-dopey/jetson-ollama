@@ -118,10 +118,12 @@ def generate_report(
         rank = c.get('rank', 0)
         pr = probe_lookup.get(rank, {})
         
-        core_status = pr.get('core_probe', {}).get('status', 'N/A')
-        full_status = pr.get('full_probe', {}).get('status', 'N/A')
-        main_failure = pr.get('core_probe', {}).get('reason', 'N/A')
-        log_path = pr.get('core_probe', {}).get('log_path', 'N/A')
+        core_status = pr.get('core_probe', {}).get('status', pr.get('status', 'N/A'))
+        full_status = pr.get('full_probe', {}).get('status', pr.get('status', 'N/A'))
+        main_failure = pr.get('core_probe', {}).get('reason', pr.get('reason', 'N/A'))
+        
+        # Construct log path from rank since probe.sh doesn't store it
+        log_path = f"logs/core-rank{rank}.log, logs/full-rank{rank}.log"
         
         lines.append(
             f"| {rank} | {core_status} | {full_status} | "
