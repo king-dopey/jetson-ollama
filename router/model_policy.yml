@@ -3,6 +3,10 @@ models:
     keep_alive: -1
     think: false
     warmup: true
+    reserved_output_tokens: 4096
+    safety_headroom_tokens: 4096
+    trim_strategy: drop_oldest_then_summarize
+    allow_auto_pull: true
     options:
       num_ctx: 262144
       num_batch: 512
@@ -14,6 +18,10 @@ models:
     keep_alive: -1
     think: true
     warmup: true
+    reserved_output_tokens: 8192
+    safety_headroom_tokens: 8192
+    trim_strategy: summarize_history
+    allow_auto_pull: true
     options:
       num_ctx: 262144
       num_batch: 512
@@ -24,6 +32,10 @@ models:
     keep_alive: 20m
     think: true
     warmup: false
+    reserved_output_tokens: 4096
+    safety_headroom_tokens: 4096
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 131072
       num_batch: 256
@@ -35,6 +47,10 @@ models:
     keep_alive: 20m
     think: true
     warmup: false
+    reserved_output_tokens: 4096
+    safety_headroom_tokens: 4096
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 131072
       num_batch: 256
@@ -46,6 +62,10 @@ models:
     keep_alive: 20m
     think: true
     warmup: false
+    reserved_output_tokens: 4096
+    safety_headroom_tokens: 4096
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 131072
       num_batch: 256
@@ -57,6 +77,10 @@ models:
     keep_alive: 20m
     think: false
     warmup: false
+    reserved_output_tokens: 2048
+    safety_headroom_tokens: 2048
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 65536
       num_batch: 256
@@ -68,6 +92,10 @@ models:
     keep_alive: 30m
     think: true
     warmup: false
+    reserved_output_tokens: 2048
+    safety_headroom_tokens: 2048
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 65536
       num_batch: 512
@@ -79,6 +107,10 @@ models:
     keep_alive: 30m
     think: true
     warmup: false
+    reserved_output_tokens: 2048
+    safety_headroom_tokens: 2048
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 65536
       num_batch: 256
@@ -90,6 +122,10 @@ models:
     keep_alive: 30m
     think: true
     warmup: false
+    reserved_output_tokens: 2048
+    safety_headroom_tokens: 2048
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 65536
       num_batch: 256
@@ -101,6 +137,10 @@ models:
     keep_alive: 30m
     think: false
     warmup: false
+    reserved_output_tokens: 2048
+    safety_headroom_tokens: 2048
+    trim_strategy: drop_oldest
+    allow_auto_pull: true
     options:
       num_ctx: 65536
       num_batch: 256

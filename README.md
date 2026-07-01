@@ -49,8 +49,17 @@ This Ollama LLM serving node is designed to work with the OpenAPI-compatible rou
 
 The router:
 - Enforces model_policy for `keep_alive`, `think`, and `num_ctx` settings
+- Applies headroom policy (`reserved_output_tokens`, `safety_headroom_tokens`, `trim_strategy`) and transparent Headroom compression before upstream forwarding
+- Can optionally inject repository context from Qdrant when `ENABLE_QDRANT_RETRIEVAL=true`
 - Provides a single unified `/v1` endpoint for clients
 - Forwards requests to Ollama with appropriate per-model settings
+
+Usage reporting contract:
+- Non-stream `/v1/chat/completions` responses include OpenAI-style `usage` with `prompt_tokens`, `completion_tokens`, `total_tokens`, and cache fields (`cache_creation_input_tokens`, `cache_read_input_tokens`)
+- Stream requests with `"stream_options": {"include_usage": true}` emit a final usage chunk (`choices: []`) before the terminal chunk and `data: [DONE]`
+
+Optional retrieval contract:
+- When enabled, the router can prepend a retrieved repo-context `system` message based on a `retrieval` object or `context_repo`/`context_query` fields in the request body.
 
 For more information about the router, please see the [router/README.md](router/README.md) file.
 
@@ -428,6 +437,7 @@ Build-time ASR image args (used by `docker compose --profile asr build`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ASR_APP_BASE_IMAGE` | `asr-runtime-base:latest` | Prebuilt ASR runtime base image tag consumed by the app Dockerfile |
 | `ASR_TORCH_INDEX_URL` | `https://pypi.jetson-ai-lab.io/jp6/cu126` | Jetson wheel index for torch/torchaudio (JetPack 6 + CUDA 12.6) |
 | `ASR_TORCH_VERSION` | `2.8.0` | Torch version pinned for WhisperX compatibility |
 | `ASR_TORCHAUDIO_VERSION` | `2.8.0` | Torchaudio version pinned for WhisperX compatibility |

@@ -171,20 +171,20 @@ class _FakeResponse:
 
 class RouterPayloadTests(unittest.TestCase):
     def test_model_policy_includes_all_served_models(self):
-        coder = MODEL_POLICY["qwen3-coder:30b"]
+        coder = MODEL_POLICY["qwen3-coder-next:q4_K_M"]
         self.assertEqual(coder["keep_alive"], -1)
         self.assertEqual(coder["think"], False)
-        self.assertEqual(coder["options"]["num_ctx"], 65536)
+        self.assertEqual(coder["options"]["num_ctx"], 262144)
         self.assertTrue(coder["warmup"])
 
-        thinker = MODEL_POLICY["qwen3.6:35b-a3b"]
-        self.assertEqual(thinker["keep_alive"], "10m")
+        thinker = MODEL_POLICY["qwen3.6:35b-a3b-q8_0"]
+        self.assertEqual(thinker["keep_alive"], -1)
         self.assertEqual(thinker["think"], True)
-        self.assertEqual(thinker["options"]["num_ctx"], 32768)
-        self.assertEqual(thinker["warmup"], False)
+        self.assertEqual(thinker["options"]["num_ctx"], 262144)
+        self.assertEqual(thinker["warmup"], True)
 
         chat_small = MODEL_POLICY["qwen3:4b"]
-        self.assertEqual(chat_small["keep_alive"], "10m")
+        self.assertEqual(chat_small["keep_alive"], "30m")
         self.assertEqual(chat_small["think"], True)
         self.assertEqual(chat_small["options"]["num_ctx"], 65536)
         self.assertEqual(chat_small["warmup"], False)
@@ -323,7 +323,7 @@ class RouterPayloadTests(unittest.TestCase):
 
     def test_build_payload_forwards_unlocked_options_format_and_keep_alive(self):
         body = {
-            "model": "qwen3-coder:30b",
+            "model": "qwen3-coder-next:q4_K_M",
             "messages": [{"role": "user", "content": "hi"}],
             "keep_alive": "5m",
             "format": "json",
@@ -343,31 +343,31 @@ class RouterPayloadTests(unittest.TestCase):
         self.assertEqual(payload["options"]["temperature"], 0.4)
         self.assertEqual(payload["options"]["num_predict"], 256)
         # Policy default still present because client did not override it.
-        self.assertEqual(payload["options"]["num_ctx"], 65536)
+        self.assertEqual(payload["options"]["num_ctx"], 262144)
 
 
     def test_build_payload_policy_num_ctx_overrides_client(self):
         body = {
-            "model": "qwen3-coder:30b",
+            "model": "qwen3-coder-next:q4_K_M",
             "messages": [{"role": "user", "content": "hi"}],
             "options": {"num_ctx": 16384},
         }
         with self.assertLogs("router", level="INFO") as cm:
             payload = _build_ollama_payload(body, think=False)
-        self.assertEqual(payload["options"]["num_ctx"], 65536)
+        self.assertEqual(payload["options"]["num_ctx"], 262144)
         self.assertTrue(any("overriding client num_ctx" in m for m in cm.output))
 
 
     def test_build_payload_uses_policy_defaults_when_client_silent(self):
         body = {
-            "model": "qwen3-coder:30b",
+            "model": "qwen3-coder-next:q4_K_M",
             "messages": [{"role": "user", "content": "hi"}],
         }
         payload = _build_ollama_payload(body, think=False)
         opts = payload["options"]
-        self.assertEqual(opts["num_ctx"], 65536)
+        self.assertEqual(opts["num_ctx"], 262144)
         self.assertEqual(opts["num_batch"], 512)
-        self.assertEqual(opts["temperature"], 0.1)
+        self.assertEqual(opts["temperature"], 0.15)
         self.assertEqual(payload["keep_alive"], -1)  # from policy
 
 

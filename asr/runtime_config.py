@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_COMPUTE_TYPES = {
     "cpu": {"float32", "int8", "int8_float32"},
@@ -43,6 +45,7 @@ class RuntimeResolution:
     degradation_reason: str | None
     expected_device: str
     diagnostics: dict[str, Any]
+    cuda_compat_mode: str  # "strict" | "fallback" | "disabled"
 
     def health_payload(self) -> dict[str, Any]:
         return {
@@ -55,6 +58,7 @@ class RuntimeResolution:
             "degradation_reason": self.degradation_reason,
             "expected_device": self.expected_device,
             "diagnostics": self.diagnostics,
+            "cuda_compat_mode": self.cuda_compat_mode,
         }
 
 
@@ -154,6 +158,25 @@ def _detect_ctranslate2_backend() -> CTranslate2Info:
     )
 
 
+def _detect_cuda_compat_mode() -> str:
+    """Detect CUDA compatibility mode from environment."""
+    mode = os.getenv("ASR_CUDA_COMPAT_MODE", "fallback")
+    if mode not in ("strict", "fallback", "disabled"):
+        logger.warning("Unknown ASR_CUDA_COMPAT_MODE=%s, defaulting to fallback", mode)
+        return "fallback"
+    return mode
+
+
+def _verify_ctranslate2_cuda() -> bool:
+    """Verify CTranslate2 CUDA support by attempting a minimal CUDA operation."""
+    try:
+        import ctranslate2
+        supported = ctranslate2.get_supported_compute_types("cuda")
+        return len(supported) > 0
+    except Exception:
+        return False
+
+
 def resolve_runtime(env: Mapping[str, str] | None = None) -> RuntimeResolution:
     runtime_env = dict(os.environ if env is None else env)
 
@@ -169,6 +192,7 @@ def resolve_runtime(env: Mapping[str, str] | None = None) -> RuntimeResolution:
         runtime_env.get("ASR_ALLOW_DEGRADED_BACKEND"),
         default=not strict_expected_cuda,
     )
+    cuda_compat_mode = _detect_cuda_compat_mode()
 
     torch_info = _detect_torch_backend()
     ct2_info = _detect_ctranslate2_backend()
@@ -190,6 +214,13 @@ def resolve_runtime(env: Mapping[str, str] | None = None) -> RuntimeResolution:
 
     degraded = False
     degradation_reason: str | None = None
+
+    # Check CTranslate2 CUDA support with compatibility mode
+    if cuda_compat_mode == "fallback" and resolved_device == "cuda":
+        if not _verify_ctranslate2_cuda():
+            degraded = True
+            degradation_reason = "ctranslate2-cuda-abi-mismatch"
+            resolved_device = "cpu"
 
     if expected_device == "cuda" and resolved_device != "cuda":
         if not allow_degraded_backend:
@@ -259,4 +290,5 @@ def resolve_runtime(env: Mapping[str, str] | None = None) -> RuntimeResolution:
         degradation_reason=degradation_reason,
         expected_device=expected_device,
         diagnostics=diagnostics,
+        cuda_compat_mode=cuda_compat_mode,
     )

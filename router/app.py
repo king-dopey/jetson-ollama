@@ -8,12 +8,15 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+import tokenizer
 import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
 from policy import load_think_policy_config, parse_think_override, should_enable_think
+from headroom import check_and_trim
+from retrieval import RetrievedChunk, format_retrieval_context, retrieve_context
 
 # Add lock for preventing concurrent pulls of the same model
 from asyncio import Lock
@@ -28,6 +31,12 @@ ASR_SCHEME = (os.getenv("ASR_SCHEME", "http") or "http").strip()
 POLICY_FILE = os.getenv("MODEL_POLICY_FILE", "/app/model_policy.yml")
 DEFAULT_MODEL = os.getenv("MODEL_DEFAULT", "qwen3.6:35b-a3b")
 DEFAULT_KEEP_ALIVE = os.getenv("KEEP_ALIVE_DEFAULT", "-1")
+ENABLE_QDRANT_RETRIEVAL = os.getenv("ENABLE_QDRANT_RETRIEVAL", "false").lower() == "true"
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "repo_chunks")
+QDRANT_EMBEDDING_MODEL = os.getenv("QDRANT_EMBEDDING_MODEL", "nomic-embed-text")
+QDRANT_TOP_K = int(os.getenv("QDRANT_TOP_K", "20"))
+QDRANT_FINAL_K = int(os.getenv("QDRANT_FINAL_K", "8"))
 
 def _translate_tool_calls(ollama_tool_calls):
     """Convert Ollama-shape tool_calls to OpenAI-shape.
@@ -71,6 +80,127 @@ def _streaming_tool_call_deltas(ollama_tool_calls):
     return translated
 
 
+def _build_stream_usage_chunk(
+    *,
+    include_usage: bool,
+    completion_id: str,
+    created: int,
+    model: str,
+    done_data: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not include_usage:
+        return None
+    prompt_tokens = int(done_data.get("prompt_eval_count", 0) or 0)
+    completion_tokens = int(done_data.get("eval_count", 0) or 0)
+    cache_creation_tokens = int(done_data.get("cache_creation_input_tokens", 0) or 0)
+    cache_read_tokens = int(done_data.get("cache_read_input_tokens", 0) or 0)
+    return {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "cache_creation_input_tokens": cache_creation_tokens,
+            "cache_read_input_tokens": cache_read_tokens,
+        },
+    }
+
+
+def _build_non_stream_usage(
+    *,
+    ollama_result: dict[str, Any],
+    payload_messages: list[dict[str, Any]],
+    model: str,
+    completion_text: str,
+) -> dict[str, int]:
+    prompt_tokens = ollama_result.get("prompt_eval_count")
+    if prompt_tokens is None:
+        prompt_tokens = tokenizer.count_prompt_tokens(payload_messages, model)
+
+    completion_tokens = ollama_result.get("eval_count")
+    if completion_tokens is None:
+        completion_tokens = tokenizer.count_completion_tokens(completion_text, model)
+
+    prompt_tokens = int(prompt_tokens or 0)
+    completion_tokens = int(completion_tokens or 0)
+    cache_creation_tokens = int(ollama_result.get("cache_creation_input_tokens", 0) or 0)
+    cache_read_tokens = int(ollama_result.get("cache_read_input_tokens", 0) or 0)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+        "cache_creation_input_tokens": cache_creation_tokens,
+        "cache_read_input_tokens": cache_read_tokens,
+    }
+
+
+def _build_retrieval_query(body: dict[str, Any]) -> dict[str, Any] | None:
+    retrieval = body.get("retrieval")
+    if isinstance(retrieval, dict):
+        return retrieval
+
+    repo = body.get("context_repo")
+    query = body.get("context_query") or body.get("query")
+    if repo and query:
+        return {
+            "repo": repo,
+            "query": query,
+            "branch": body.get("context_branch"),
+            "top_k": body.get("retrieval_top_k", QDRANT_TOP_K),
+            "final_k": body.get("retrieval_final_k", QDRANT_FINAL_K),
+            "filters": body.get("retrieval_filters") or {},
+        }
+    return None
+
+
+async def _inject_retrieval_context(body: dict[str, Any], messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not ENABLE_QDRANT_RETRIEVAL:
+        return messages
+
+    request = _build_retrieval_query(body)
+    if not request:
+        return messages
+
+    repo = str(request.get("repo") or "").strip()
+    query = str(request.get("query") or "").strip()
+    if not repo or not query:
+        return messages
+
+    try:
+        chunks = await retrieve_context(
+            repo=repo,
+            query=query,
+            branch=request.get("branch"),
+            top_k=int(request.get("top_k", QDRANT_TOP_K)),
+            final_k=int(request.get("final_k", QDRANT_FINAL_K)),
+            filters=request.get("filters") or {},
+            qdrant_url=QDRANT_URL,
+            collection=request.get("collection") or QDRANT_COLLECTION,
+            embedding_model=request.get("embedding_model") or QDRANT_EMBEDDING_MODEL,
+        )
+    except Exception as exc:
+        logger.warning("router: retrieval unavailable for repo=%s query=%s: %s", repo, query, exc)
+        return messages
+
+    if not chunks:
+        return messages
+
+    retrieval_block = format_retrieval_context([
+        RetrievedChunk(**chunk) if isinstance(chunk, dict) else chunk
+        for chunk in chunks
+    ])
+    if not retrieval_block:
+        return messages
+
+    injected = [{"role": "system", "content": retrieval_block}]
+    injected.extend(messages)
+    return injected
+
+
 def _parse_scalar(value: Any) -> Any:
     if isinstance(value, str) and value.lstrip("-").isdigit():
         return int(value)
@@ -105,6 +235,10 @@ def _load_policy() -> dict[str, dict[str, Any]]:
                     "think": bool(think) if think is not None else True,
                     "options": {k: _parse_scalar(v) for k, v in options.items()},
                     "warmup": bool(item.get("warmup", False)),
+                    "reserved_output_tokens": _parse_scalar(item.get("reserved_output_tokens", 2048)),
+                    "safety_headroom_tokens": _parse_scalar(item.get("safety_headroom_tokens", 2048)),
+                    "trim_strategy": item.get("trim_strategy", "drop_oldest"),
+                    "allow_auto_pull": bool(item.get("allow_auto_pull", True)),
                 }
             if table:
                 return table
@@ -594,11 +728,6 @@ def _build_ollama_payload(body: dict[str, Any], think: bool) -> dict[str, Any]:
             "router: payload approaches num_ctx (%d / %d). Truncation likely.",
             approx_tokens, policy_ctx,
         )
-        raise HTTPException(
-            status_code=413,
-            detail=f"Request approx {approx_tokens} tokens exceeds policy num_ctx {policy_ctx} for {payload['model']}. "
-                f"Reduce history, condense context, or switch to a model with larger num_ctx.",
-        )
 
     # Exsure tools are forwarded
     if body.get("tools") is not None:
@@ -689,7 +818,27 @@ async def chat_completions(request: Request):
         config=THINK_POLICY_CONFIG,
         default_think=model_default_think,
     )
+    body = dict(body)
+    body_messages = body.get("messages") or []
+    if isinstance(body_messages, list):
+        body["messages"] = await _inject_retrieval_context(body, body_messages)
+
     payload = _build_ollama_payload(body, think=think)
+    stream_options = body.get("stream_options") or {}
+    include_stream_usage = bool(stream_options.get("include_usage", False))
+    policy_entry = MODEL_POLICY.get(model_name, {})
+    headroom_result = check_and_trim(payload["messages"], model_name, policy_entry)
+    if headroom_result.rejected:
+        raise HTTPException(status_code=413, detail=headroom_result.error_response)
+    if headroom_result.trimmed:
+        logger.info(
+            "router: trimmed request for model=%s prompt_tokens=%s budget=%s reason=%s",
+            model_name,
+            headroom_result.prompt_tokens,
+            headroom_result.usable_prompt_budget,
+            headroom_result.trim_reason,
+        )
+        payload["messages"] = headroom_result.messages
     stream = payload.get("stream", False)
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -844,6 +993,16 @@ async def chat_completions(request: Request):
                                     )
 
                                 if data.get("done"):
+                                    usage_chunk = _build_stream_usage_chunk(
+                                        include_usage=include_stream_usage,
+                                        completion_id=completion_id,
+                                        created=created,
+                                        model=model,
+                                        done_data=data,
+                                    )
+                                    if usage_chunk is not None:
+                                        await queue.put(f"data: {json.dumps(usage_chunk)}\n\n")
+
                                     if saw_tool_calls:
                                         finish_reason = "tool_calls"
                                     else:
@@ -866,6 +1025,7 @@ async def chat_completions(request: Request):
                                     await queue.put(
                                         f"data: {json.dumps(end_chunk)}\n\n"
                                     )
+                                    await queue.put("data: [DONE]\n\n")
                                     break
                 except Exception as exc:
                     logger.exception("router: reader task failed: %s", exc)
@@ -945,8 +1105,12 @@ async def chat_completions(request: Request):
         done_reason = result.get("done_reason")
         finish_reason = done_reason if done_reason in ("stop", "length", "content_filter") else "stop"
 
-    prompt_tokens = result.get("prompt_eval_count", 0)
-    completion_tokens = result.get("eval_count", 0)
+    usage = _build_non_stream_usage(
+        ollama_result=result,
+        payload_messages=payload.get("messages") or [],
+        model=model,
+        completion_text=content,
+    )
 
     return JSONResponse(
         {
@@ -961,11 +1125,7 @@ async def chat_completions(request: Request):
                     "finish_reason": finish_reason,
                 }
             ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
+            "usage": usage,
         }
     )
 

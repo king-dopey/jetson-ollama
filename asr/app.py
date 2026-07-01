@@ -181,6 +181,8 @@ async def healthz() -> JSONResponse:
             "loaded_providers": loaded_provider_names,
             "lazy_load_alignment": ASR_LAZY_LOAD_ALIGNMENT,
             "runtime": ASR_RUNTIME.health_payload(),
+            # NEW: explicit CUDA compatibility indicator
+            "cuda_compatible": not ASR_RUNTIME.degraded or ASR_RUNTIME.resolved_device == "cpu",
         }
     )
 

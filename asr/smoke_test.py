@@ -119,5 +119,88 @@ def main():
         print("✗ Some ASR service tests failed!")
         return 1
 
+
+def test_dockerfile_multistage():
+    """Verify Dockerfile uses multi-stage build pattern"""
+    dockerfile_path = "asr/Dockerfile"
+    if not os.path.exists(dockerfile_path):
+        print(f"✗ {dockerfile_path} not found")
+        return False
+    
+    with open(dockerfile_path, 'r') as f:
+        content = f.read()
+    
+    checks = [
+        ("FROM.*AS builder", "Builder stage defined"),
+        ("FROM python:3.12-slim-bookworm AS runtime", "Runtime stage defined") if "AS runtime" in content else ("FROM python:3.12-slim-bookworm", "Runtime stage base image"),
+        ("COPY --from=builder", "Copy from builder stage"),
+    ]
+    
+    all_passed = True
+    for pattern, description in checks:
+        import re
+        if re.search(pattern, content):
+            print(f"✓ {description}")
+        else:
+            print(f"✗ {description} not found")
+            all_passed = False
+    
+    return all_passed
+
+
+def test_ctranslate2_build_config():
+    """Verify CTranslate2 build configuration for JetPack 7.2"""
+    dockerfile_path = "asr/Dockerfile"
+    if not os.path.exists(dockerfile_path):
+        print(f"✗ {dockerfile_path} not found")
+        return False
+    
+    with open(dockerfile_path, 'r') as f:
+        content = f.read()
+    
+    checks = [
+        ("cuda-toolkit-13-2", "CUDA 13.2 toolkit package"),
+        ("WITH_CUDNN=OFF", "cuDNN disabled (JetPack 7.2 compatibility)"),
+        ("CUDA_TOOLKIT_ROOT_DIR=/usr", "CUDA toolkit root dir set to /usr"),
+        ("CUDA_INCLUDE_DIRS=/usr/include/aarch64-linux-gnu", "CUDA include dirs for Jetson"),
+    ]
+    
+    all_passed = True
+    for pattern, description in checks:
+        if pattern in content:
+            print(f"✓ {description}")
+        else:
+            print(f"✗ {description} not found")
+            all_passed = False
+    
+    return all_passed
+
+
+def main():
+    print("Running ASR service smoke test...")
+    print("=" * 50)
+    
+    tests = [
+        test_files_exist,
+        test_env_vars,
+        test_compose_profiles,
+        test_dockerfile_multistage,
+        test_ctranslate2_build_config,
+    ]
+    
+    all_passed = True
+    for test in tests:
+        print(f"\nRunning {test.__name__}...")
+        if not test():
+            all_passed = False
+    
+    print("\n" + "=" * 50)
+    if all_passed:
+        print("✓ All ASR service tests passed!")
+        return 0
+    else:
+        print("✗ Some ASR service tests failed!")
+        return 1
+
 if __name__ == "__main__":
     sys.exit(main())

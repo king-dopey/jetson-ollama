@@ -8,8 +8,11 @@ This is an OpenAI-compatible router that sits in front of an Ollama LLM serving 
 - **Model Policy Management**: Configurable policy for managing model residency (`keep_alive`), think control, and context length
 - **Tool Call Support**: Proper translation between OpenAI and Ollama tool call formats
 - **Streaming Support**: Full streaming response support for chat completions
+- **OpenAI Usage Contract**: Non-stream usage plus optional final stream usage chunk (`stream_options.include_usage`)
 - **Think Control**: Automatic and overrideable `think` flag management for Ollama models
 - **Warmup Support**: Automatic model warmup at startup for configured models
+- **Transparent Headroom Compression**: In-process Headroom compression (`headroom-ai`) before forwarding, with hard context budget enforcement
+- **Optional Qdrant Retrieval**: Repo context retrieval can be injected before forwarding when enabled
 
 ## Architecture
 
@@ -22,6 +25,7 @@ The router is configured through `model_policy.yml` which defines:
 - Default `think` behavior for each model
 - Context length (`num_ctx`) and other model options
 - Whether to warm up models at startup
+- Headroom budget and trim policy (`reserved_output_tokens`, `safety_headroom_tokens`, `trim_strategy`)
 
 In compose deployments, `/app/model_policy.yml` is provided by profile bind mount:
 - `PROFILE=orin` -> `profiles/orin/models.yaml`
@@ -38,6 +42,13 @@ In compose deployments, `/app/model_policy.yml` is provided by profile bind moun
 | `MODEL_POLICY_FILE` | `/app/model_policy.yml` | Path to the model policy configuration |
 | `MODEL_DEFAULT` | `qwen3.6:35b-a3b` | Default model to use |
 | `KEEP_ALIVE_DEFAULT` | `-1` | Default keep_alive value |
+| `HEADROOM_ENABLED` | `1` | Enable transparent in-process Headroom compression before upstream forwarding |
+| `ENABLE_QDRANT_RETRIEVAL` | `false` | Enable optional repository context retrieval before upstream forwarding |
+| `QDRANT_URL` | `http://qdrant:6333` | Qdrant service URL used for retrieval and ingestion |
+| `QDRANT_COLLECTION` | `repo_chunks` | Qdrant collection that stores repo context chunks |
+| `QDRANT_EMBEDDING_MODEL` | `nomic-embed-text` | Ollama embedding model used by retrieval and ingestion |
+| `QDRANT_TOP_K` | `20` | Number of candidate chunks to consider during retrieval |
+| `QDRANT_FINAL_K` | `8` | Number of chunks injected into the prompt |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## Usage
@@ -89,38 +100,73 @@ The `model_policy.yml` file defines how each model should be handled:
 
 ```yaml
 models:
-  - model: qwen3-coder:30b
+  - model: qwen3-coder-next:q4_K_M
     keep_alive: -1
     think: false
     warmup: true
+    reserved_output_tokens: 4096
+    safety_headroom_tokens: 4096
+    trim_strategy: drop_oldest_then_summarize
+    allow_auto_pull: true
     options:
-      num_ctx: 65536
+      num_ctx: 262144
       num_batch: 512
-      temperature: 0.1
-      top_p: 0.9
-      repeat_penalty: 1.05
-
-  - model: qwen3.6:35b-a3b
-    keep_alive: 0
-    think: true
-    warmup: false
-    options:
-      num_ctx: 32768
-      num_batch: 512
-      temperature: 0.6
+      temperature: 0.15
       top_p: 0.95
-
-  - model: qwen3-coder-next:q4_K_M
-    keep_alive: 0
-    think: false
-    warmup: false
-    options:
-      num_ctx: 16384
-      num_batch: 256
-      temperature: 0.2
-      top_p: 0.9
       repeat_penalty: 1.05
+
+  - model: qwen3.6:35b-a3b-q8_0
+    keep_alive: -1
+    think: true
+    warmup: true
+    reserved_output_tokens: 8192
+    safety_headroom_tokens: 8192
+    trim_strategy: summarize_history
+    allow_auto_pull: true
+    options:
+      num_ctx: 262144
+      num_batch: 512
+      temperature: 0.25
+      top_p: 0.95
 ```
+
+## Usage Contract
+
+### Non-streaming
+
+`/v1/chat/completions` returns OpenAI-style `usage` on every successful non-stream response:
+
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+- `cache_creation_input_tokens` (defaults to `0` when upstream does not provide it)
+- `cache_read_input_tokens` (defaults to `0` when upstream does not provide it)
+
+When upstream token counters are absent, the router falls back to tokenizer-based counting.
+
+### Streaming
+
+If request body includes:
+
+```json
+{
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}
+```
+
+the router emits a final usage chunk (`choices: []`) before the terminal chunk and `data: [DONE]`.
+
+### Optional Retrieval Injection
+
+If retrieval is enabled via `ENABLE_QDRANT_RETRIEVAL=true`, the router can inject a retrieved repository context block ahead of the user messages when the request provides either:
+
+- a `retrieval` object with `repo` and `query`, or
+- top-level `context_repo` plus `context_query`
+
+The injected block is added as a leading `system` message and is transparent to the upstream Ollama call.
 
 ## Integration with Ollama
 
