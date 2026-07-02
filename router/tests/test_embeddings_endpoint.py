@@ -102,10 +102,15 @@ class EmbeddingsEndpointTests(unittest.TestCase):
             self.assertEqual(prompt, "hello")
             return [0.1, 0.2]
 
-        with mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding):
+        with (
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=True)) as preflight,
+            mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding),
+        ):
             response = asyncio.run(
                 app.embeddings(_FakeRequest({"model": "qwen3-embedding:4b", "input": "hello"}))
             )
+
+        preflight.assert_awaited_once_with("qwen3-embedding:4b")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content["object"], "list")
@@ -118,7 +123,10 @@ class EmbeddingsEndpointTests(unittest.TestCase):
         async def _fake_fetch_embedding(model: str, prompt: str) -> list[float]:
             return [float(len(prompt))]
 
-        with mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding):
+        with (
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding),
+        ):
             response = asyncio.run(
                 app.embeddings(
                     _FakeRequest(
@@ -140,11 +148,27 @@ class EmbeddingsEndpointTests(unittest.TestCase):
             self.assertEqual(model, app.EMBEDDING_MODEL_DEFAULT)
             return [0.3]
 
-        with mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding):
+        with (
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(app, "_fetch_embedding", new=_fake_fetch_embedding),
+        ):
             response = asyncio.run(app.embeddings(_FakeRequest({"input": "hello"})))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content["model"], app.EMBEDDING_MODEL_DEFAULT)
+
+    def test_embedding_preflight_failure_auto_pull_disabled(self):
+        with (
+            mock.patch.object(app, "AUTO_PULL_MISSING_MODELS", False),
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=False)),
+        ):
+            with self.assertRaises(Exception) as ctx:
+                asyncio.run(
+                    app.embeddings(
+                        _FakeRequest({"model": "qwen3-embedding:4b", "input": "hello"})
+                    )
+                )
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
 
 
 if __name__ == "__main__":

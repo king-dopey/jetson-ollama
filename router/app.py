@@ -1174,6 +1174,13 @@ async def embeddings(request: Request):
     if not model:
         raise HTTPException(status_code=400, detail="'model' is required")
 
+    logger.info("Starting preflight check for embedding model %s", model)
+    if not await _preflight_model(model):
+        logger.error("Preflight check failed for embedding model %s", model)
+        if AUTO_PULL_MISSING_MODELS:
+            raise HTTPException(status_code=500, detail=f"Failed to pull model {model}")
+        raise HTTPException(status_code=404, detail=f"Model {model} not available and auto-pull disabled")
+
     inputs = _coerce_embedding_inputs(body.get("input"))
     data = []
     total_prompt_tokens = 0
