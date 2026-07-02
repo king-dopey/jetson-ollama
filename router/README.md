@@ -183,6 +183,8 @@ curl -sS http://127.0.0.1:4000/v1/embeddings \
 
 If `model` is omitted, `EMBEDDING_MODEL_DEFAULT` is used.
 
+For Zoo Code Codebase Indexing with this embedder setup, set model dimensions to `2560` in Zoo Code.
+
 ### Optional Retrieval Injection
 
 If retrieval is enabled via `ENABLE_QDRANT_RETRIEVAL=true`, the router can inject a retrieved repository context block ahead of the user messages when the request provides either:
