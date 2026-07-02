@@ -11,6 +11,10 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt 
 
 COPY app.py ./
+COPY tokenizer.py ./
+COPY headroom.py ./
+COPY retrieval.py ./
+COPY ingest_repo.py ./
 COPY policy.py ./
 COPY model_policy.yml ./
 

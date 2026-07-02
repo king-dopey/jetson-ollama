@@ -31,6 +31,7 @@ ASR_SCHEME = (os.getenv("ASR_SCHEME", "http") or "http").strip()
 POLICY_FILE = os.getenv("MODEL_POLICY_FILE", "/app/model_policy.yml")
 DEFAULT_MODEL = os.getenv("MODEL_DEFAULT", "qwen3.6:35b-a3b")
 DEFAULT_KEEP_ALIVE = os.getenv("KEEP_ALIVE_DEFAULT", "-1")
+EMBEDDING_MODEL_DEFAULT = os.getenv("EMBEDDING_MODEL_DEFAULT", "qwen3-embedding:4b")
 ENABLE_QDRANT_RETRIEVAL = os.getenv("ENABLE_QDRANT_RETRIEVAL", "false").lower() == "true"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "repo_chunks")
@@ -155,6 +156,36 @@ def _build_retrieval_query(body: dict[str, Any]) -> dict[str, Any] | None:
             "filters": body.get("retrieval_filters") or {},
         }
     return None
+
+
+def _coerce_embedding_inputs(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                out.append(item)
+            else:
+                out.append(str(item))
+        return out
+    raise HTTPException(status_code=400, detail="'input' must be a string or an array of strings")
+
+
+async def _fetch_embedding(model: str, prompt: str) -> list[float]:
+    payload = {"model": model, "prompt": prompt}
+    try:
+        response = await _ollama_post("/api/embeddings", payload, stream=False)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Ollama upstream unavailable")
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    data = response.json()
+    embedding = data.get("embedding")
+    if not isinstance(embedding, list):
+        raise HTTPException(status_code=502, detail="Invalid embedding response from Ollama")
+    return [float(v) for v in embedding]
 
 
 async def _inject_retrieval_context(body: dict[str, Any], messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -308,7 +339,7 @@ async def _warmup_model(model: str, entry: dict[str, Any]) -> None:
         logger.warning("warmup: %s failed: %s", model, exc)
 
 
-async def list_local_models() -> list[str]:
+async def list_local_models() -> list[str] | None:
     """Get list of locally available models from Ollama."""
     try:
         timeout = httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=30.0)
@@ -321,12 +352,14 @@ async def list_local_models() -> list[str]:
             return model_names
     except Exception as exc:
         logger.warning("Failed to list local models: %s", exc)
-        return []
+        return None
 
 
 async def is_model_available(model_name: str) -> bool:
     """Check if a model is available locally."""
     local_models = await list_local_models()
+    if local_models is None:
+        return False
     is_available = model_name in local_models
     logger.debug("Model %s availability check: %s (local models: %s)", model_name, is_available, local_models)
     return is_available
@@ -412,10 +445,14 @@ async def _preflight_model(model_name: str) -> bool:
     if model_name not in MODEL_POLICY:
         logger.warning("Model %s not in policy, rejecting request", model_name)
         return False
+
+    local_models = await list_local_models()
+    if local_models is None:
+        raise HTTPException(status_code=503, detail="Ollama upstream unavailable")
     
     # Ensure model is available
     logger.debug("Checking if model %s is available", model_name)
-    if await is_model_available(model_name):
+    if model_name in local_models:
         logger.info("Model %s is already available", model_name)
         return True
     
@@ -1126,6 +1163,41 @@ async def chat_completions(request: Request):
                 }
             ],
             "usage": usage,
+        }
+    )
+
+
+@app.post("/v1/embeddings")
+async def embeddings(request: Request):
+    body = await request.json()
+    model = body.get("model") or EMBEDDING_MODEL_DEFAULT
+    if not model:
+        raise HTTPException(status_code=400, detail="'model' is required")
+
+    inputs = _coerce_embedding_inputs(body.get("input"))
+    data = []
+    total_prompt_tokens = 0
+    for idx, text in enumerate(inputs):
+        vector = await _fetch_embedding(model, text)
+        token_count = tokenizer.count_completion_tokens(text, model)
+        total_prompt_tokens += int(token_count)
+        data.append(
+            {
+                "object": "embedding",
+                "embedding": vector,
+                "index": idx,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": data,
+            "model": model,
+            "usage": {
+                "prompt_tokens": total_prompt_tokens,
+                "total_tokens": total_prompt_tokens,
+            },
         }
     )
 

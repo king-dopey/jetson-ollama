@@ -161,6 +161,20 @@ async def _collect_stream(gen):
 
 
 class ChatCompletionIntegrationTests(unittest.TestCase):
+    def test_nonstream_returns_503_when_ollama_unreachable(self):
+        body = {
+            "model": "qwen3:4b",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+
+        with mock.patch.object(app, "list_local_models", new=mock.AsyncMock(return_value=None)):
+            with self.assertRaises(Exception) as ctx:
+                asyncio.run(app.chat_completions(_FakeRequest(body)))
+
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 503)
+        self.assertEqual(getattr(ctx.exception, "detail", None), "Ollama upstream unavailable")
+
     def test_stream_include_usage_emits_usage_then_done(self):
         _FakeAsyncClient.stream_lines = [
             '{"message": {"content": "hi"}}',

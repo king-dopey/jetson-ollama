@@ -22,7 +22,7 @@ logger = logging.getLogger("router.ingest_repo")
 
 DEFAULT_COLLECTION = os.getenv("QDRANT_COLLECTION", "repo_chunks")
 DEFAULT_QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-DEFAULT_EMBEDDING_MODEL = os.getenv("QDRANT_EMBEDDING_MODEL", "nomic-embed-text")
+DEFAULT_EMBEDDING_MODEL = os.getenv("QDRANT_EMBEDDING_MODEL", "qwen3-embedding:4b")
 DEFAULT_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
 
 SUPPORTED_TEXT_EXTENSIONS = {

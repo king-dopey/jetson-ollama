@@ -196,6 +196,7 @@ class RouterPayloadTests(unittest.TestCase):
         self.assertIn("/align", post_paths)
         self.assertIn("/v1/audio/align", post_paths)
         self.assertIn("/v1/audio/transcriptions", post_paths)
+        self.assertIn("/v1/embeddings", post_paths)
 
 
 

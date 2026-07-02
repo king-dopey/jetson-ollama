@@ -159,6 +159,48 @@ class Beta:
         self.assertIn("alpha", symbols)
         self.assertIn("Beta", symbols)
 
+    def test_qdrant_disabled_passthrough(self):
+        """Verify that when ENABLE_QDRANT_RETRIEVAL=false, messages are returned unchanged."""
+        body = {"retrieval": {"repo": "repo", "query": "find the thing"}}
+        messages = [{"role": "user", "content": "question"}]
+
+        with (
+            mock.patch.object(app, "ENABLE_QDRANT_RETRIEVAL", False),
+            mock.patch.object(app, "retrieve_context") as mock_retrieve,
+        ):
+            injected = asyncio.run(app._inject_retrieval_context(body, messages))
+
+        self.assertEqual(injected, messages)
+        mock_retrieve.assert_not_called()
+
+    def test_qdrant_unavailable_fails_open(self):
+        """Verify that when Qdrant is unavailable, messages are returned unchanged."""
+        body = {"retrieval": {"repo": "repo", "query": "find the thing"}}
+        messages = [{"role": "user", "content": "question"}]
+
+        with (
+            mock.patch.object(app, "ENABLE_QDRANT_RETRIEVAL", True),
+            mock.patch.object(app, "retrieve_context") as mock_retrieve,
+        ):
+            mock_retrieve.side_effect = Exception("Connection refused")
+            injected = asyncio.run(app._inject_retrieval_context(body, messages))
+
+        self.assertEqual(injected, messages)
+
+    def test_retrieval_empty_repo_returns_unchanged(self):
+        """Verify that when repo is empty, messages are returned unchanged."""
+        body = {"retrieval": {"repo": "", "query": "find the thing"}}
+        messages = [{"role": "user", "content": "question"}]
+
+        with (
+            mock.patch.object(app, "ENABLE_QDRANT_RETRIEVAL", True),
+            mock.patch.object(app, "retrieve_context") as mock_retrieve,
+        ):
+            injected = asyncio.run(app._inject_retrieval_context(body, messages))
+
+        self.assertEqual(injected, messages)
+        mock_retrieve.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

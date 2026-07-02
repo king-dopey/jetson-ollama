@@ -43,27 +43,11 @@ PROFILE=orin docker compose --profile verifier up ollama-pull-verifier
 docker compose --profile asr up -d
 ```
 
-## Integration with OpenAPI-Compatible Router
+## OpenAI-Compatible Router
 
-This Ollama LLM serving node is designed to work with the OpenAPI-compatible router in the `router` subfolder. The router provides a unified `/v1` endpoint for LLM interactions while managing model residency, context length, and other parameters according to a policy configuration.
+This stack ships an optional OpenAI-compatible router in the `router` subfolder. The router enforces model residency policies, applies transparent Headroom compression, and optionally injects repository context from Qdrant before forwarding to Ollama.
 
-The router:
-- Enforces model_policy for `keep_alive`, `think`, and `num_ctx` settings
-- Applies headroom policy (`reserved_output_tokens`, `safety_headroom_tokens`, `trim_strategy`) and transparent Headroom compression before upstream forwarding
-- Can optionally inject repository context from Qdrant when `ENABLE_QDRANT_RETRIEVAL=true`
-- Provides a single unified `/v1` endpoint for clients
-- Forwards requests to Ollama with appropriate per-model settings
-
-Usage reporting contract:
-- Non-stream `/v1/chat/completions` responses include OpenAI-style `usage` with `prompt_tokens`, `completion_tokens`, `total_tokens`, and cache fields (`cache_creation_input_tokens`, `cache_read_input_tokens`)
-- Stream requests with `"stream_options": {"include_usage": true}` emit a final usage chunk (`choices: []`) before the terminal chunk and `data: [DONE]`
-
-Optional retrieval contract:
-- When enabled, the router can prepend a retrieved repo-context `system` message based on a `retrieval` object or `context_repo`/`context_query` fields in the request body.
-
-For more information about the router, please see the [router/README.md](router/README.md) file.
-
-The `proxy` profile in this repository's docker-compose still launches a bundled router instance for convenience; see `router/README.md` for the standalone router docs.
+For deployment, configuration, and API details, see [router/README.md](router/README.md).
 
 
 ### Warmup pull failures
@@ -136,6 +120,13 @@ This section describes the recommended roles for each model in this configuratio
 ### Documentation-only models (not added to chat policy)
 - `qwen3-embedding:4b` - Embedding model for vector storage and retrieval. Not added to chat policy as it's not a chat model. Can be used directly through Ollama embedding APIs.
 - `qwen2.5-coder:3b-base` - Base completion model for editor workflows. Not added to chat policy by default as it's not the preferred default for LibreChat or general chat/tool use.
+
+### Embedding model keep_alive guidance
+
+| Hardware Model | Recommended model | Recommended `keep_alive` | Reasoning |
+| --- | --- | --- | --- |
+| AGX Orin (64GB) | `qwen3-embedding:4b` | `5m` | Conserves shared RAM for LLMs; reload cost is low. |
+| AGX Thor | `qwen3-embedding:4b` | `0` or `30m` | Higher memory bandwidth makes reloads fast; residency improves burst performance. |
 
 ### Benchmark/manual-only models
 - `qwen3-coder:30b-a3b-q8_0` - Benchmark model for manual testing and evaluation. Not recommended as a default enabled model on this box.
@@ -306,54 +297,9 @@ docker compose --profile asr up -d
 docker compose --profile asr down
 ```
 
-### Router Alignment API
+### Router Alignment Forwarding
 
-When router is deployed, the public alignment route is:
-- `POST /v1/audio/align` on router host (`:4000`)
-
-Router behavior:
-- Requires `multipart/form-data` uploads (`media_file` plus form fields)
-- Rejects path-only/JSON alignment RPCs with `cross_host_alignment_requires_multipart_upload`
-- Forwards uploaded media bytes upstream to ASR `/align` via `ASR_BASE_URL`
-- Requires `python-multipart` in the router image to parse multipart form bodies
-
-#### Router Alignment Smoke Check
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/audio/align \
-  -F "media_file=@/path/to/_audio.wav" \
-  -F "model=whisper-large-v3-turbo" \
-  -F "model_accuracy=whisper-large-v3" \
-  -F "return_word_timestamps=true" \
-  -F "prefer_forced_alignment=true" | jq .
-```
-
-Equivalent minimal multipart request:
-
-```bash
-curl -F "media_file=@/path/to/audio.wav" \
-  -F "model=whisper-large-v3-turbo" \
-  -F "return_word_timestamps=true" \
-  -F "prefer_forced_alignment=true" \
-  http://127.0.0.1:4000/v1/audio/align
-```
-
-`BASE_URL=http://ask:4000` remains the standard app-to-router configuration. Do not assume
-shared filesystem paths across app/router/ASR containers.
-
-#### ASR Healthcheck
-
-```bash
-curl -sS http://127.0.0.1:8000/healthz | jq .
-```
-
-#### Alignment Troubleshooting
-
-If router logs show:
-
-`The python-multipart library must be installed to use form parsing.`
-
-the router image is missing multipart parser support. Rebuild the router after installing router dependencies (which now include `python-multipart`) and redeploy the router container.
+When deployed alongside the router (profile `proxy`), alignment requests can be sent to the router's public endpoint at `POST /v1/audio/align` on port 4000. The router forwards multipart uploads to the ASR service via `ASR_BASE_URL`. See [router/README.md](router/README.md) for details.
 
 ### ASR Service API
 
@@ -600,42 +546,6 @@ Run the validation scripts to verify both profiles:
 ./scripts/validation/validate-thor-asr.sh
 ```
 
-## On-Demand Model Auto-Pull
-
-Configured models can now be auto-pulled on first request. When a configured model such as `qwen3-coder-next:q4_K_M` is requested and is not already present in Ollama, the router will automatically pull it before forwarding the chat request.
-
-This feature:
-- Only auto-pulls models that are explicitly allowed by the repo configuration (defined in `router/model_policy.yml`)
-- Treats the router's model policy as the allow-list
-- Does NOT auto-pull arbitrary model names supplied by clients if they are not in policy
-- The first request for a missing allowed model may block until pull completes
-- Large models may cause Ollama to evict other models from memory; that is acceptable and should just be documented
-- Existing warmup behavior remains unchanged for startup models
-
-To enable auto-pull, set the following environment variables in your `.env` file:
-```
-AUTO_PULL_MISSING_MODELS=true
-MODEL_PULL_TIMEOUT_SEC=7200
-MODEL_PULL_MAX_RETRIES=2
-MODEL_PULL_BACKOFF_SEC=5
-```
-
-Startup warmup behavior is still separate and unchanged. Manual pull is now optional for configured models.
-
-If you want Compose to trigger the optional verifier pull after Ollama becomes healthy, run:
-
-```bash
-docker compose --profile verifier up ollama-pull-verifier
-```
-
-The warmup container is designed for the documented two-model budget and should normally use:
-
-```bash
-WARMUP_MODELS="qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768"
-```
-
-Use `WARMUP_DEFAULT_NUM_CTX=16384` when you want a shared fallback for entries that omit `@num_ctx`.
-
 ## Ollama Runtime Defaults
 
 The `.env.example` file now carries the Jetson-oriented defaults for this two-warm-model plan:
@@ -663,187 +573,11 @@ docker compose logs ollama | grep -i 'flash attention'
 
 Expect both warm models to be present, `context_length` to be `16384` for `qwen3-coder:30b` and `32768` for `qwen3.6:35b-a3b`, and combined `size_vram` to stay well under about 48 GB.
 
-## Test Models API
-
-When using the router (port 4000), the router intercepts requests and applies the following per-model policies before forwarding to Ollama.
-
-Using optional router endpoint (`/v1`):
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/models | jq .
-```
-
-Directly on Ollama tags endpoint:
-
-```bash
-curl -sS http://127.0.0.1:11434/api/tags | jq .
-```
-
-## Chat Completion Tests
-
-When using the router (port 4000), the router intercepts requests and applies the following per-model policies before forwarding to Ollama.
-
-### Think Control Policy (Proxy -> Ollama)
-
-LibreChat cannot directly set Ollama's `think` flag for each turn in this setup, so the proxy injects `think` in the Ollama `/api/chat` payload.
-
-Policy defaults:
-
-- Per-model defaults come from `router/model_policy.yml`.
-- `qwen3-coder:30b` defaults to `think=false`.
-- `qwen3.6:35b-a3b`, `nemotron-cascade-2:30b`, and `qwen3-coder:30b` default to `think=true`.
-- `think=false` for web/browse/search-style tool flows (for example `web_search`, `browser`, `http_get`, `fetch`, `scrape`).
-- `think=true` for non-web tools such as `file_search` and `openweather` unless summarization/size heuristics trigger `think=false`.
-- `think=false` when message content is very large (`DISABLE_THINK_CHAR_THRESHOLD`) and for summary-like last-user turns over recent tool-heavy or long context.
-
-Manual override header:
-
-- `X-Ollama-Think: true`
-- `X-Ollama-Think: false`
-
-If the override header is present, it takes precedence over policy.
-
-The router forwards the following request fields unchanged to Ollama's `/api/chat` endpoint when clients send them:
-
-- `options` such as `num_ctx`, `num_predict`, `cache_type_k`, `cache_type_v`, and `num_keep`
-- `format` including JSON schema structured-output payloads
-- `keep_alive`
-- `X-Ollama-Think`
-
-Example A: automatic `think=false` from web-search style tool call.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.6:35b-a3b",
-    "messages": [
-      {"role": "user", "content": "Use web search and summarize key takeaways."}
-    ],
-    "tools": [
-      {"type": "function", "function": {"name": "web_search", "description": "Search the web", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
-    ]
-  }' | jq .
-```
-
-Example B: same request but force `think=true` with header override.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -H 'X-Ollama-Think: true' \
-  -d '{
-    "model": "qwen3.6:35b-a3b",
-    "messages": [
-      {"role": "user", "content": "Use web search and summarize key takeaways."}
-    ],
-    "tools": [
-      {"type": "function", "function": {"name": "web_search", "description": "Search the web", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
-    ]
-  }' | jq .
-```
-
-### Default/general model (stays warm)
-
-`keep_alive: -1` is set by router policy for this model by default.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.6:35b-a3b",
-    "messages": [{"role": "user", "content": "Give me a one-line summary of Jetson Orin."}]
-  }' | jq .
-```
-
-### Structured-output model (stays warm, default think=false)
-
-`keep_alive: -1` and `think: false` are set by router policy for this model by default.
-
-Warning: raising `num_ctx` beyond the ceiling listed above will exceed the unified-memory budget for a two-warm configuration.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3-coder:30b",
-    "format": {
-      "type": "json_schema",
-      "json_schema": {
-        "name": "cue_selection",
-        "schema": {
-          "type": "object",
-          "properties": {
-            "cue_ids": {"type": "array", "items": {"type": "string"}}
-          },
-          "required": ["cue_ids"]
-        }
-      }
-    },
-    "options": {
-      "num_ctx": 16384,
-      "num_predict": 256,
-      "cache_type_k": "q8_0",
-      "cache_type_v": "q8_0",
-      "num_keep": 128
-    },
-    "messages": [{"role": "user", "content": "Return cue IDs as JSON only."}]
-  }' | jq .
-```
-
-### Coding model (cold/evicted)
-
-`keep_alive: 0` is set by router policy for this model by default.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3-coder:30b",
-    "messages": [{"role": "user", "content": "Write a Python function to reverse a linked list."}]
-  }' | jq .
-```
-
-### Override keep_alive per request (explicit caller control)
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3-coder:30b",
-    "keep_alive": "2m",
-    "messages": [{"role": "user", "content": "Stay loaded briefly."}]
-  }' | jq .
-```
-
-### Optional verifier model
-
-`keep_alive: 10m` and `think: true` are set by router policy for this model by default.
-
-```bash
-curl -sS http://127.0.0.1:4000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "nemotron-cascade-2:30b",
-    "messages": [{"role": "user", "content": "Verify whether the answer is internally consistent."}]
-  }' | jq .
-```
-
-## Direct Ollama OpenAI-Compatible Path
-
-If LibreChat can call Ollama directly, set base URL to `http://ORIN_IP:11434/v1`.
-
-Per-request keep_alive can be set in payload if your client supports sending it.
+For router-specific configuration, examples, and API details, see [router/README.md](router/README.md).
 
 ## LibreChat Configuration
 
-- Base URL (recommended with policy routing): `http://ORIN_IP:4000/v1` (requires `proxy` profile)
-- Model IDs:
-  - `qwen3-coder:30b`
-  - `qwen3.6:35b-a3b`
-  - `nemotron-cascade-2:30b` (optional if pulled)
-  - `qwen3-coder:30b`
-- Set LibreChat default model to `qwen3.6:35b-a3b`.
+For the OpenAI-compatible router endpoint, set LibreChat base URL to `http://ORIN_IP:4000/v1` (requires `proxy` profile). See [router/README.md](router/README.md) for configuration details.
 
 ## Jetson Runtime Notes
 
@@ -851,18 +585,6 @@ Per-request keep_alive can be set in payload if your client supports sending it.
 - This stack intentionally uses Ollama for automatic model residency control (`keep_alive` + `OLLAMA_MAX_LOADED_MODELS=2`).
 - `qwen2.5-coder` is supported by Ollama even if not currently listed in Jetson AI Lab model cards.
 - If you switch to NVIDIA's vLLM command for Qwen3.6, use a separate endpoint (typically `:8000`) and keep this Ollama stack for two-model hot/cold policy behavior.
-
-## Memory Behavior Summary
-
-- `OLLAMA_MAX_LOADED_MODELS=2` keeps `qwen3-coder:30b` and `qwen3.6:35b-a3b` warm together.
-- Router policy defaults:
-  - `qwen3-coder:30b` -> `keep_alive=-1`, `think=false`
-  - `qwen3.6:35b-a3b` -> `keep_alive=-1` (stay loaded)
-  - `nemotron-cascade-2:30b` -> `keep_alive=10m`, `think=true`
-  - `qwen3-coder:30b` -> `keep_alive=0` (unload after request)
-- Global fallback default on Ollama: `OLLAMA_KEEP_ALIVE=10m`.
-- Loading `nemotron-cascade-2:30b` while both warm models are resident exceeds the two-warm budget. Ollama will evict one warm model to make room because `OLLAMA_MAX_LOADED_MODELS=2`, so expect a one-time reload penalty on the next call to the evicted model after the verifier runs.
-- Leave the verifier at `keep_alive: 10m` so it does not remain resident longer than necessary.
 
 ### Verifying Two-Warm Residency
 

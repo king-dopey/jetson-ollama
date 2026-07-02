@@ -9,6 +9,7 @@ This is an OpenAI-compatible router that sits in front of an Ollama LLM serving 
 - **Tool Call Support**: Proper translation between OpenAI and Ollama tool call formats
 - **Streaming Support**: Full streaming response support for chat completions
 - **OpenAI Usage Contract**: Non-stream usage plus optional final stream usage chunk (`stream_options.include_usage`)
+- **OpenAI-Compatible Embeddings**: `/v1/embeddings` forwards embedding requests to Jetson Ollama
 - **Think Control**: Automatic and overrideable `think` flag management for Ollama models
 - **Warmup Support**: Automatic model warmup at startup for configured models
 - **Transparent Headroom Compression**: In-process Headroom compression (`headroom-ai`) before forwarding, with hard context budget enforcement
@@ -36,6 +37,7 @@ In compose deployments, `/app/model_policy.yml` is provided by profile bind moun
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | URL of the Ollama service |
+| `EMBEDDING_MODEL_DEFAULT` | `qwen3-embedding:4b` | Default model used by `/v1/embeddings` when request omits `model` |
 | `ASR_BASE_URL` | empty | Optional explicit ASR/alignment upstream override (`http://host:port`) |
 | `ASR_PORT` | `8000` | Fallback ASR port used when `ASR_BASE_URL` is not set |
 | `ASR_SCHEME` | `http` | Fallback ASR scheme used when `ASR_BASE_URL` is not set |
@@ -43,10 +45,12 @@ In compose deployments, `/app/model_policy.yml` is provided by profile bind moun
 | `MODEL_DEFAULT` | `qwen3.6:35b-a3b` | Default model to use |
 | `KEEP_ALIVE_DEFAULT` | `-1` | Default keep_alive value |
 | `HEADROOM_ENABLED` | `1` | Enable transparent in-process Headroom compression before upstream forwarding |
-| `ENABLE_QDRANT_RETRIEVAL` | `false` | Enable optional repository context retrieval before upstream forwarding |
+| `ROUTER_BIND_IP` | `0.0.0.0` | Shared bind IP used by router-host services (`router`, `qdrant`) |
+| `ENABLE_QDRANT_RETRIEVAL` | `true` | Enable repository context retrieval before upstream forwarding |
 | `QDRANT_URL` | `http://qdrant:6333` | Qdrant service URL used for retrieval and ingestion |
 | `QDRANT_COLLECTION` | `repo_chunks` | Qdrant collection that stores repo context chunks |
-| `QDRANT_EMBEDDING_MODEL` | `nomic-embed-text` | Ollama embedding model used by retrieval and ingestion |
+| `QDRANT_EMBEDDING_MODEL` | `qwen3-embedding:4b` | Ollama embedding model used by retrieval and ingestion |
+| `QDRANT_PORT` | `6333` | Host port bound for Qdrant API access |
 | `QDRANT_TOP_K` | `20` | Number of candidate chunks to consider during retrieval |
 | `QDRANT_FINAL_K` | `8` | Number of chunks injected into the prompt |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -58,6 +62,11 @@ In compose deployments, `/app/model_policy.yml` is provided by profile bind moun
 ```bash
 docker compose up -d
 ```
+
+This compose stack runs both services on the router host:
+
+- `fastapi-router` on `http://<ROUTER_BIND_IP>:<ROUTER_PORT>`
+- `qdrant` on `http://<ROUTER_BIND_IP>:<QDRANT_PORT>`
 
 ### Test the Router
 
@@ -159,6 +168,21 @@ If request body includes:
 
 the router emits a final usage chunk (`choices: []`) before the terminal chunk and `data: [DONE]`.
 
+### Embeddings
+
+The router exposes an OpenAI-compatible embeddings endpoint:
+
+```bash
+curl -sS http://127.0.0.1:4000/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3-embedding:4b",
+    "input": ["class Foo", "def bar(): pass"]
+  }' | jq .
+```
+
+If `model` is omitted, `EMBEDDING_MODEL_DEFAULT` is used.
+
 ### Optional Retrieval Injection
 
 If retrieval is enabled via `ENABLE_QDRANT_RETRIEVAL=true`, the router can inject a retrieved repository context block ahead of the user messages when the request provides either:
@@ -167,6 +191,51 @@ If retrieval is enabled via `ENABLE_QDRANT_RETRIEVAL=true`, the router can injec
 - top-level `context_repo` plus `context_query`
 
 The injected block is added as a leading `system` message and is transparent to the upstream Ollama call.
+
+## Transparent Headroom Compression
+
+When `HEADROOM_ENABLED=true` (default: `1`), the router applies transparent history compression via the Headroom project before forwarding requests to Ollama. The compression respects per-model policies defined in `model_policy.yml`:
+
+- `reserved_output_tokens`: Tokens reserved for generation output.
+- `safety_headroom_tokens`: Additional safety margin.
+- `trim_strategy`: One of `drop_oldest`, `summarize_history`, or `drop_oldest_then_summarize`.
+
+If compression cannot fit the request within budget, the router returns HTTP 413 with detailed token budget information.
+
+## Optional Qdrant Retrieval
+
+When `ENABLE_QDRANT_RETRIEVAL=true`, the router can inject retrieved repository context before forwarding to Ollama. Qdrant is treated as an external service; configure its URL via `QDRANT_URL` (default: `http://qdrant:6333`).
+
+### Fail-Open Behavior
+
+If Qdrant is unavailable, the router proceeds with the request without retrieval context. No error is raised to the client.
+
+### Retrieval Request Contract
+
+Include one of the following in the request body:
+
+```json
+{
+  "retrieval": {
+    "repo": "my-repo",
+    "query": "find authentication logic",
+    "branch": "main",
+    "top_k": 20,
+    "final_k": 8
+  }
+}
+```
+
+Or use top-level fields:
+
+```json
+{
+  "context_repo": "my-repo",
+  "context_query": "find authentication logic"
+}
+```
+
+Retrieved chunks are injected as a leading `system` message with formatted context.
 
 ## Integration with Ollama
 
