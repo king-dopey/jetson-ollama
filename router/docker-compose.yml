@@ -41,6 +41,8 @@ services:
     image: qdrant/qdrant:v1.12.5
     container_name: qdrant
     restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__TELEMETRY_DISABLED: ${QDRANT_TELEMETRY_DISABLED:-true}
     volumes:
       - qdrant-storage:/qdrant/storage
     ports:
@@ -51,6 +53,14 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
-
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          
 volumes:
   qdrant-storage:

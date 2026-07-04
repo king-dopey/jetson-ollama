@@ -13,9 +13,9 @@ def _reload_modules_with_approx_map(model_name: str):
     os.environ["TOKENIZER_MAP"] = json.dumps({model_name: "approximate"})
     import tokenizer
     importlib.reload(tokenizer)
-    import headroom
-    importlib.reload(headroom)
-    return headroom
+    import router_headroom
+    importlib.reload(router_headroom)
+    return router_headroom
 
 
 def test_calculate_usable_prompt_budget():

@@ -14,6 +14,11 @@ try:
 except Exception:  # pragma: no cover - optional dependency in dev/test environments
     _headroom_compress = None
 
+try:
+    from headroom.proxy import server as _headroom_proxy_server  # type: ignore
+except Exception:  # pragma: no cover - optional dependency in dev/test environments
+    _headroom_proxy_server = None
+
 
 TrimStrategy = Literal["drop_oldest_then_summarize", "summarize_history", "drop_oldest"]
 
@@ -36,6 +41,9 @@ class HeadroomCheckResult:
     usable_prompt_budget: int
     trim_reason: str | None = None
     error_response: Dict[str, Any] | None = None
+    tokens_before: int = 0
+    tokens_after: int = 0
+    transforms_applied: List[str] | None = None
 
 
 def resolve_headroom(model_name: str, policy_entry: Dict[str, Any]) -> HeadroomPolicy:
@@ -70,31 +78,62 @@ def _token_count(messages: List[Dict[str, Any]], model: str) -> int:
 def _normalize_headroom_output(compressed: Any, original: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if isinstance(compressed, list):
         return compressed
+    if hasattr(compressed, "messages") and isinstance(getattr(compressed, "messages"), list):
+        return compressed.messages
     if isinstance(compressed, dict):
         maybe_messages = compressed.get("messages")
         if isinstance(maybe_messages, list):
             return maybe_messages
-    logger.warning("router.headroom: unexpected headroom output type %s; using original messages", type(compressed).__name__)
+    logger.warning(
+        "router.headroom: unexpected headroom output type %s; using original messages",
+        type(compressed).__name__,
+    )
     return original
 
 
-def _compress_via_headroom(messages: List[Dict[str, Any]], model_name: str) -> List[Dict[str, Any]]:
+def _compress_telemetry(compressed: Any) -> tuple[int, int, list[str]]:
+    before = int(getattr(compressed, "tokens_before", 0) or 0)
+    after = int(getattr(compressed, "tokens_after", 0) or 0)
+    transforms = list(getattr(compressed, "transforms_applied", []) or [])
+    return before, after, transforms
+
+
+def _compress_via_headroom(messages: List[Dict[str, Any]], model_name: str) -> tuple[List[Dict[str, Any]], int, int, list[str]]:
     if os.getenv("HEADROOM_ENABLED", "1").lower() in {"0", "false", "off", "no"}:
-        return messages
+        return messages, 0, 0, []
     if _headroom_compress is None:
         logger.info("router.headroom: headroom-ai not installed; skipping compression")
-        return messages
+        return messages, 0, 0, []
 
     try:
         compressed = _headroom_compress(messages, model=model_name)
-        return _normalize_headroom_output(compressed, messages)
     except TypeError:
-        # Older API variants may not accept model kwarg.
         compressed = _headroom_compress(messages)
-        return _normalize_headroom_output(compressed, messages)
     except Exception as exc:
         logger.warning("router.headroom: compression failed, continuing without compression: %s", exc)
-        return messages
+        return messages, 0, 0, []
+
+    normalized = _normalize_headroom_output(compressed, messages)
+    before, after, transforms = _compress_telemetry(compressed)
+    return normalized, before, after, transforms
+
+
+def retrieve_from_ccr(hash_key: str, query: str | None = None) -> str | None:
+    """Retrieve original content from Headroom CCR store when available."""
+    if not hash_key:
+        return None
+    if _headroom_proxy_server is None:
+        return None
+
+    try:
+        store = _headroom_proxy_server.get_compression_store()
+        entry = store.retrieve(str(hash_key), query=query)
+        if entry is None:
+            return None
+        return str(getattr(entry, "original_content", "") or "")
+    except Exception as exc:
+        logger.warning("router.headroom: CCR retrieval failed for hash=%s: %s", hash_key, exc)
+        return None
 
 
 def check_and_trim(
@@ -112,10 +151,21 @@ def check_and_trim(
             messages=messages,
             prompt_tokens=initial_tokens,
             usable_prompt_budget=budget,
+            tokens_before=initial_tokens,
+            tokens_after=initial_tokens,
+            transforms_applied=[],
         )
 
-    # Delegate compression/compaction to the upstream Headroom project.
-    trimmed_messages = _compress_via_headroom(messages, model_name)
+    trimmed_messages, tokens_before, tokens_after, transforms = _compress_via_headroom(messages, model_name)
+    if transforms:
+        logger.info(
+            "router.headroom: compression telemetry model=%s before=%s after=%s transforms=%s",
+            model_name,
+            tokens_before,
+            tokens_after,
+            transforms,
+        )
+
     final_tokens = _token_count(trimmed_messages, model_name)
     if final_tokens <= budget:
         return HeadroomCheckResult(
@@ -125,6 +175,9 @@ def check_and_trim(
             prompt_tokens=final_tokens,
             usable_prompt_budget=budget,
             trim_reason="history_over_budget",
+            tokens_before=tokens_before or initial_tokens,
+            tokens_after=tokens_after or final_tokens,
+            transforms_applied=transforms,
         )
 
     over_by = max(0, final_tokens - budget)
@@ -135,6 +188,9 @@ def check_and_trim(
         prompt_tokens=final_tokens,
         usable_prompt_budget=budget,
         trim_reason="cannot_fit_after_trim",
+        tokens_before=tokens_before or initial_tokens,
+        tokens_after=tokens_after or final_tokens,
+        transforms_applied=transforms,
         error_response={
             "error": {
                 "type": "context_length_exceeded",

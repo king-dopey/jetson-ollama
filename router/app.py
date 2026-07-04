@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from contextlib import asynccontextmanager
 
 from policy import load_think_policy_config, parse_think_override, should_enable_think
-from headroom import check_and_trim
+from router_headroom import check_and_trim, retrieve_from_ccr
 from retrieval import RetrievedChunk, format_retrieval_context, retrieve_context
 
 # Add lock for preventing concurrent pulls of the same model
@@ -38,6 +38,7 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "repo_chunks")
 QDRANT_EMBEDDING_MODEL = os.getenv("QDRANT_EMBEDDING_MODEL", "nomic-embed-text")
 QDRANT_TOP_K = int(os.getenv("QDRANT_TOP_K", "20"))
 QDRANT_FINAL_K = int(os.getenv("QDRANT_FINAL_K", "8"))
+MAX_HEADROOM_RETRIEVE_HOPS = int(os.getenv("HEADROOM_MAX_RETRIEVE_HOPS", "3"))
 
 def _translate_tool_calls(ollama_tool_calls):
     """Convert Ollama-shape tool_calls to OpenAI-shape.
@@ -537,6 +538,94 @@ def _coerce_tool_arguments(args: Any) -> dict:
     return {}
 
 
+def _split_headroom_tool_calls(tool_calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    headroom_calls: list[dict[str, Any]] = []
+    other_calls: list[dict[str, Any]] = []
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        name = str(fn.get("name") or "")
+        if name == "headroom_retrieve":
+            headroom_calls.append(call)
+        else:
+            other_calls.append(call)
+    return headroom_calls, other_calls
+
+
+def _resolve_headroom_tool_messages(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tool_messages: list[dict[str, Any]] = []
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        args = _coerce_tool_arguments(fn.get("arguments"))
+        hash_key = args.get("hash") or args.get("reference") or args.get("id")
+        query = args.get("query")
+        if not hash_key:
+            content = json.dumps({"error": "missing_hash", "tool": "headroom_retrieve"})
+        else:
+            retrieved = retrieve_from_ccr(str(hash_key), str(query) if query is not None else None)
+            if retrieved is None:
+                content = json.dumps({"error": "not_found", "hash": str(hash_key), "query": query})
+            else:
+                content = retrieved
+
+        call_id = call.get("id") or f"ccr_{uuid.uuid4().hex[:24]}"
+        call["id"] = call_id
+        tool_messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": content,
+        })
+    return tool_messages
+
+
+async def _continue_after_headroom_retrieve(
+    *,
+    payload: dict[str, Any],
+    assistant_content: str,
+    headroom_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve internal headroom_retrieve calls and continue generation transparently."""
+    if not headroom_calls:
+        return {"message": {"content": assistant_content}}
+
+    hop_payload = dict(payload)
+    hop_payload["stream"] = False
+    hop_payload["messages"] = list(payload.get("messages") or [])
+    hop_payload["messages"].append(
+        {
+            "role": "assistant",
+            "content": assistant_content,
+            "tool_calls": headroom_calls,
+        }
+    )
+    hop_payload["messages"].extend(_resolve_headroom_tool_messages(headroom_calls))
+
+    for _ in range(max(1, MAX_HEADROOM_RETRIEVE_HOPS)):
+        response = await _ollama_post("/api/chat", hop_payload, stream=False)
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+
+        result = response.json()
+        message = result.get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return result
+
+        headroom_only, _other = _split_headroom_tool_calls(tool_calls)
+        if not headroom_only:
+            return result
+
+        hop_payload["messages"].append(
+            {
+                "role": "assistant",
+                "content": message.get("content", "") or "",
+                "tool_calls": tool_calls,
+            }
+        )
+        hop_payload["messages"].extend(_resolve_headroom_tool_messages(headroom_only))
+
+    raise HTTPException(status_code=502, detail="Exceeded headroom retrieval continuation limit")
+
+
 def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Translate incoming messages (OpenAI-shape or Anthropic-shape content
     blocks as emitted by Zoo Code / Roo Code) into the shape Ollama's
@@ -984,6 +1073,8 @@ async def chat_completions(request: Request):
                                 return
 
                             saw_tool_calls = False
+                            pending_headroom_calls: list[dict[str, Any]] = []
+                            assistant_content_parts: list[str] = []
                             async for line in resp.aiter_lines():
                                 if not line.strip():
                                     continue
@@ -991,9 +1082,12 @@ async def chat_completions(request: Request):
                                 message = data.get("message") or {}
 
                                 # Tool-call delta translation.
-                                tc_deltas = _streaming_tool_call_deltas(
-                                    message.get("tool_calls")
-                                )
+                                raw_tool_calls = message.get("tool_calls") or []
+                                headroom_calls, passthrough_calls = _split_headroom_tool_calls(raw_tool_calls)
+                                if headroom_calls:
+                                    pending_headroom_calls.extend(headroom_calls)
+
+                                tc_deltas = _streaming_tool_call_deltas(passthrough_calls)
                                 if tc_deltas:
                                     saw_tool_calls = True
                                     tc_chunk = {
@@ -1014,6 +1108,7 @@ async def chat_completions(request: Request):
                                 # Plain content delta.
                                 token = message.get("content", "")
                                 if token:
+                                    assistant_content_parts.append(token)
                                     chunk = {
                                         "id": completion_id,
                                         "object": "chat.completion.chunk",
@@ -1030,6 +1125,87 @@ async def chat_completions(request: Request):
                                     )
 
                                 if data.get("done"):
+                                    if pending_headroom_calls:
+                                        continued = await _continue_after_headroom_retrieve(
+                                            payload=payload,
+                                            assistant_content="".join(assistant_content_parts),
+                                            headroom_calls=pending_headroom_calls,
+                                        )
+                                        continued_message = continued.get("message") or {}
+                                        continued_tool_calls = continued_message.get("tool_calls") or []
+                                        continued_headroom, continued_passthrough = _split_headroom_tool_calls(continued_tool_calls)
+                                        if continued_headroom:
+                                            logger.warning(
+                                                "router: unresolved nested headroom_retrieve tool calls after continuation"
+                                            )
+
+                                        continued_tc = _streaming_tool_call_deltas(continued_passthrough)
+                                        if continued_tc:
+                                            saw_tool_calls = True
+                                            continued_tool_chunk = {
+                                                "id": completion_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": created,
+                                                "model": model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {"tool_calls": continued_tc},
+                                                    "finish_reason": None,
+                                                }],
+                                            }
+                                            await queue.put(
+                                                f"data: {json.dumps(continued_tool_chunk)}\n\n"
+                                            )
+
+                                        continued_content = continued_message.get("content", "") or ""
+                                        if continued_content:
+                                            continued_content_chunk = {
+                                                "id": completion_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": created,
+                                                "model": model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {"content": continued_content},
+                                                    "finish_reason": None,
+                                                }],
+                                            }
+                                            await queue.put(
+                                                f"data: {json.dumps(continued_content_chunk)}\n\n"
+                                            )
+
+                                        usage_chunk = _build_stream_usage_chunk(
+                                            include_usage=include_stream_usage,
+                                            completion_id=completion_id,
+                                            created=created,
+                                            model=model,
+                                            done_data=continued,
+                                        )
+                                        if usage_chunk is not None:
+                                            await queue.put(f"data: {json.dumps(usage_chunk)}\n\n")
+
+                                        finish_reason = "tool_calls" if continued_passthrough else (
+                                            continued.get("done_reason")
+                                            if continued.get("done_reason") in ("stop", "length", "content_filter")
+                                            else "stop"
+                                        )
+                                        continued_end_chunk = {
+                                            "id": completion_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created,
+                                            "model": model,
+                                            "choices": [{
+                                                "index": 0,
+                                                "delta": {},
+                                                "finish_reason": finish_reason,
+                                            }],
+                                        }
+                                        await queue.put(
+                                            f"data: {json.dumps(continued_end_chunk)}\n\n"
+                                        )
+                                        await queue.put("data: [DONE]\n\n")
+                                        break
+
                                     usage_chunk = _build_stream_usage_chunk(
                                         include_usage=include_stream_usage,
                                         completion_id=completion_id,
@@ -1129,8 +1305,22 @@ async def chat_completions(request: Request):
 
     result = response.json()
     ollama_message = result.get("message") or {}
+
+    # Transparently resolve internal Headroom CCR retrieval calls before returning to clients.
+    headroom_calls, _other_calls = _split_headroom_tool_calls(ollama_message.get("tool_calls") or [])
+    if headroom_calls:
+        result = await _continue_after_headroom_retrieve(
+            payload=payload,
+            assistant_content=ollama_message.get("content", "") or "",
+            headroom_calls=headroom_calls,
+        )
+        ollama_message = result.get("message") or {}
+
     content = ollama_message.get("content", "") or ""
-    tool_calls = _translate_tool_calls(ollama_message.get("tool_calls"))
+    _headroom_final, passthrough_final = _split_headroom_tool_calls(ollama_message.get("tool_calls") or [])
+    if _headroom_final:
+        logger.warning("router: suppressing unresolved headroom_retrieve tool calls from client response")
+    tool_calls = _translate_tool_calls(passthrough_final)
 
     assistant_message = {"role": "assistant", "content": content}
     if tool_calls:

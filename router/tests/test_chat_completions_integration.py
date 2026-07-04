@@ -238,6 +238,81 @@ class ChatCompletionIntegrationTests(unittest.TestCase):
         self.assertEqual(response.content["usage"]["cache_creation_input_tokens"], 1)
         self.assertEqual(response.content["usage"]["cache_read_input_tokens"], 2)
 
+    def test_nonstream_resolves_headroom_retrieve_transparently(self):
+        body = {
+            "model": "qwen3:4b",
+            "stream": False,
+            "messages": [{"role": "user", "content": "continue"}],
+        }
+        first = _FakeHTTPResponse(
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_hr",
+                            "type": "function",
+                            "function": {"name": "headroom_retrieve", "arguments": {"hash": "abc123"}},
+                        }
+                    ],
+                }
+            }
+        )
+        second = {
+            "message": {"content": "resolved answer"},
+            "prompt_eval_count": 10,
+            "eval_count": 4,
+        }
+        calls = {"n": 0}
+
+        async def _fake_ollama_post(path: str, payload: dict, stream: bool = False):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return first
+            return _FakeHTTPResponse(second)
+
+        with (
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(app, "check_and_trim", return_value=_HeadroomResult(rejected=False, trimmed=False, messages=body["messages"])),
+            mock.patch.object(app, "_ollama_post", new=_fake_ollama_post),
+            mock.patch.object(app, "_continue_after_headroom_retrieve", new=mock.AsyncMock(return_value=second)),
+        ):
+            response = asyncio.run(app.chat_completions(_FakeRequest(body)))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content["choices"][0]["message"]["content"], "resolved answer")
+
+    def test_stream_resolves_headroom_retrieve_without_leak(self):
+        _FakeAsyncClient.stream_lines = [
+            '{"message": {"tool_calls": [{"id": "call_hr", "function": {"name": "headroom_retrieve", "arguments": {"hash": "abc123"}}}]}}',
+            '{"done": true, "done_reason": "stop", "prompt_eval_count": 5, "eval_count": 1}',
+        ]
+
+        body = {
+            "model": "qwen3:4b",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+
+        continued = {
+            "message": {"content": "resolved stream"},
+            "done_reason": "stop",
+            "prompt_eval_count": 6,
+            "eval_count": 2,
+        }
+
+        with (
+            mock.patch.object(app, "_preflight_model", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(app, "check_and_trim", return_value=_HeadroomResult(rejected=False, trimmed=False, messages=body["messages"])),
+            mock.patch.object(app.httpx, "AsyncClient", _FakeAsyncClient),
+            mock.patch.object(app, "_continue_after_headroom_retrieve", new=mock.AsyncMock(return_value=continued)),
+        ):
+            response = asyncio.run(app.chat_completions(_FakeRequest(body)))
+            frames = asyncio.run(_collect_stream(response.content))
+
+        self.assertTrue(any("resolved stream" in f for f in frames))
+        self.assertFalse(any("headroom_retrieve" in f for f in frames))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 fastapi==0.115.12
-headroom-ai
+headroom-ai[all]
 httpx==0.28.1
 python-multipart==0.0.9
 PyYAML==6.0.2

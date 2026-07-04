@@ -45,12 +45,14 @@ In compose deployments, `/app/model_policy.yml` is provided by profile bind moun
 | `MODEL_DEFAULT` | `qwen3.6:35b-a3b` | Default model to use |
 | `KEEP_ALIVE_DEFAULT` | `-1` | Default keep_alive value |
 | `HEADROOM_ENABLED` | `1` | Enable transparent in-process Headroom compression before upstream forwarding |
+| `HEADROOM_MAX_RETRIEVE_HOPS` | `3` | Maximum internal continuation hops when resolving `headroom_retrieve` CCR tool calls |
 | `ROUTER_BIND_IP` | `0.0.0.0` | Shared bind IP used by router-host services (`router`, `qdrant`) |
 | `ENABLE_QDRANT_RETRIEVAL` | `true` | Enable repository context retrieval before upstream forwarding |
 | `QDRANT_URL` | `http://qdrant:6333` | Qdrant service URL used for retrieval and ingestion |
 | `QDRANT_COLLECTION` | `repo_chunks` | Qdrant collection that stores repo context chunks |
 | `QDRANT_EMBEDDING_MODEL` | `qwen3-embedding:4b` | Ollama embedding model used by retrieval and ingestion |
 | `QDRANT_PORT` | `6333` | Host port bound for Qdrant API access |
+| `QDRANT_TELEMETRY_DISABLED` | `true` | Disables Qdrant telemetry reporting (`QDRANT__SERVICE__TELEMETRY_DISABLED`) |
 | `QDRANT_TOP_K` | `20` | Number of candidate chunks to consider during retrieval |
 | `QDRANT_FINAL_K` | `8` | Number of chunks injected into the prompt |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -196,13 +198,19 @@ The injected block is added as a leading `system` message and is transparent to 
 
 ## Transparent Headroom Compression
 
-When `HEADROOM_ENABLED=true` (default: `1`), the router applies transparent history compression via the Headroom project before forwarding requests to Ollama. The compression respects per-model policies defined in `model_policy.yml`:
+When `HEADROOM_ENABLED=true` (default: `1`), the router applies transparent history compression via the Headroom library (`headroom-ai[all]`) before forwarding requests to Ollama. The compression respects per-model policies defined in `model_policy.yml`:
 
 - `reserved_output_tokens`: Tokens reserved for generation output.
 - `safety_headroom_tokens`: Additional safety margin.
 - `trim_strategy`: One of `drop_oldest`, `summarize_history`, or `drop_oldest_then_summarize`.
 
 If compression cannot fit the request within budget, the router returns HTTP 413 with detailed token budget information.
+
+If Headroom compression fails at runtime, the router fails open and forwards original messages unchanged.
+
+### CCR Tool Passthrough
+
+When the model emits an internal `headroom_retrieve` tool call, the router resolves it transparently against Headroom's CCR cache and continues generation internally. Clients do not see internal `headroom_retrieve` calls; they receive the final OpenAI-compatible response as usual.
 
 ## Optional Qdrant Retrieval
 
