@@ -4,12 +4,14 @@ services:
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia
+    env_file:
+      - ./profiles/${PROFILE:-thor}/stack.env
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
       OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
       OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
-      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
       OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
       OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       NVIDIA_VISIBLE_DEVICES: all
@@ -32,15 +34,18 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    env_file:
+      - ./profiles/${PROFILE:-thor}/stack.env
     environment:
       OLLAMA_URL: http://ollama:11434
-      WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768}
-      WARMUP_DEFAULT_NUM_CTX: ${WARMUP_DEFAULT_NUM_CTX:-16384}
       KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       PULL_MAX_RETRIES: ${PULL_MAX_RETRIES:-3}
       PULL_BACKOFF_SEC: ${PULL_BACKOFF_SEC:-10}
+      ACTIVE_PROFILE: ${PROFILE:-thor}
     volumes:
       - ./scripts:/scripts:ro
+      - ./profiles/${PROFILE:-thor}/models.yaml:/profiles/models.yaml:ro
+      - ./profiles/${PROFILE:-thor}/librechat-modelspecs.yaml:/profiles/librechat-modelspecs.yaml:ro
     command: ["/bin/sh", "/scripts/warmup.sh"]
 
   ollama-pull-verifier:
@@ -51,36 +56,9 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    env_file:
+      - ./profiles/${PROFILE:-thor}/stack.env
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
-    command: ["ollama pull nemotron-cascade-2:30b"]
-
-  fastapi-router:
-    profiles: ["proxy"]
-    build:
-      context: ./router
-      dockerfile: Dockerfile
-    image: local/ollama-openai-router:0.1.0
-    container_name: ollama-openai-router
-    restart: unless-stopped
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      ROUTER_HOST: 0.0.0.0
-      ROUTER_PORT: 4000
-      OLLAMA_BASE_URL: http://ollama:11434
-      MODEL_POLICY_FILE: /app/model_policy.yml
-      MODEL_DEFAULT: ${MODEL_DEFAULT:-qwen3.6:35b-a3b}
-      MODEL_CODER: ${MODEL_CODER:-qwen2.5-coder:32b-instruct}
-      KEEP_ALIVE_DEFAULT: ${KEEP_ALIVE_DEFAULT:--1}
-      KEEP_ALIVE_CODER: ${KEEP_ALIVE_CODER:-0}
-    ports:
-      - "0.0.0.0:${ROUTER_PORT:-4000}:4000"
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/healthz', timeout=3)\" || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
+    command: ["ollama pull \"$$MODEL_VERIFY_TAG\""]
