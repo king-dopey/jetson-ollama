@@ -37,3 +37,9 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+#private deploy files
+deploy*
+
+#Zoo Code Implementation Plan
+impl_plan.xml

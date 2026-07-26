@@ -1,23 +1,16 @@
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: ${OLLAMA_IMAGE_TAG:-ollama/ollama:latest}
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
-      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
-      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
-      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
-      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
-      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    env_file:
+      - profiles/global.env
+      - profiles/jetson/${HARDWARE:-orin}.env
     ports:
-      - "0.0.0.0:${OLLAMA_PORT:-11434}:11434"
+      - "${OLLAMA_HOST}:11434"
     volumes:
-      - /storage/ollama:/root/.ollama
+      - ${OLLAMA_VOLUME_HOST}:/root/.ollama
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 10s
@@ -32,10 +25,13 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    env_file:
+      - profiles/global.env
+      - profiles/jetson/${HARDWARE:-orin}.env
     environment:
       OLLAMA_URL: http://ollama:11434
-      WARMUP_MODELS: ${WARMUP_MODELS:-qwen3-coder:30b@16384 qwen3.6:35b-a3b@32768}
-      WARMUP_DEFAULT_NUM_CTX: ${WARMUP_DEFAULT_NUM_CTX:-16384}
+      WARMUP_MODELS: ${WARMUP_MODELS}
+      WARMUP_DEFAULT_NUM_CTX: ${WARMUP_DEFAULT_NUM_CTX:-65536}
       KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
       PULL_MAX_RETRIES: ${PULL_MAX_RETRIES:-3}
       PULL_BACKOFF_SEC: ${PULL_BACKOFF_SEC:-10}
@@ -45,7 +41,7 @@ services:
 
   ollama-pull-verifier:
     profiles: ["verifier"]
-    image: ollama/ollama:latest
+    image: ${OLLAMA_IMAGE_TAG:-ollama/ollama:latest}
     container_name: ollama-pull-verifier
     restart: "no"
     depends_on:
@@ -54,4 +50,4 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
-    command: ["ollama pull qwen3-coder:30b"]
+    command: ["ollama", "pull", "${VERIFIER_PULL_MODEL:-qwen3-coder:30b}"]
