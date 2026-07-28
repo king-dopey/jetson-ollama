@@ -9,10 +9,11 @@ This node is single-tenant by design: do not run any other GPU workload or heavy
 ```
 .
 ├── .env.example                    # Template for global environment variables
-├── docker-compose.yml              # Ollama service + ollama-warmup container
+├── docker-compose.yml              # Ollama service + ollama-warmup + verifier containers
 ├── LICENSE
 ├── profiles/
-│   ├── global.env                  # Global settings (image tag, volume path, host binding)
+│   ├── ollama.env                  # Ollama runtime settings (host binding, cloud disable)
+│   ├── warmup.env                  # Warmup container settings (models, retries, URLs)
 │   └── jetson/
 │       ├── orin.env                # Orin profile (64 GB unified memory)
 │       └── thor.env                # Thor profile (128 GB unified memory)
@@ -23,11 +24,21 @@ This node is single-tenant by design: do not run any other GPU workload or heavy
 
 ## Profile System
 
-The Docker Compose configuration uses a **layered env_file architecture** that separates global defaults from hardware-specific settings:
+The Docker Compose configuration uses a **layered env_file architecture** that separates service-specific defaults from hardware-specific settings:
+
+### Ollama Service
 
 ```yaml
 env_file:
-  - profiles/global.env                  # Step 1: Global defaults
+  - profiles/ollama.env                  # Step 1: Ollama runtime defaults
+  - profiles/jetson/${HARDWARE:-orin}.env  # Step 2: Hardware overrides
+```
+
+### Warmup Service
+
+```yaml
+env_file:
+  - profiles/warmup.env                  # Step 1: Warmup defaults
   - profiles/jetson/${HARDWARE:-orin}.env  # Step 2: Hardware overrides
 ```
 
@@ -37,7 +48,8 @@ Variables defined in later files override earlier ones. This allows a single `do
 
 | File | Purpose | Variables |
 |------|---------|-----------|
-| [`profiles/global.env`](profiles/global.env) | Global settings shared across all profiles | `OLLAMA_IMAGE_TAG`, `OLLAMA_VOLUME_HOST`, `OLLAMA_HOST` |
+| [`profiles/ollama.env`](profiles/ollama.env) | Ollama runtime settings | `OLLAMA_HOST`, `OLLAMA_NO_CLOUD` |
+| [`profiles/warmup.env`](profiles/warmup.env) | Warmup container settings | `OLLAMA_URL`, `WARMUP_MODELS`, retry config |
 | [`profiles/jetson/orin.env`](profiles/jetson/orin.env) | Orin-specific settings (64 GB) | Runtime defaults, warmup models, context lengths |
 | [`profiles/jetson/thor.env`](profiles/jetson/thor.env) | Thor-specific settings (128 GB) | Runtime defaults, warmup models, context lengths |
 
@@ -53,7 +65,7 @@ docker compose up -d
 HARDWARE=thor docker compose up -d
 ```
 
-The `HARDWARE` variable defaults to `orin` if not set. The selected profile file (`profiles/jetson/${HARDWARE}.env`) is loaded after `profiles/global.env`, so its values take precedence.
+The `HARDWARE` variable defaults to `orin` if not set. The selected profile file (`profiles/jetson/${HARDWARE}.env`) is loaded after `ollama.env` or `warmup.env`, so its values take precedence.
 
 ### Quick Start
 
